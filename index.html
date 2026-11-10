@@ -370,10 +370,9 @@ tr:last-child td { border-bottom: 0; }
 
 <nav id="menu" class="menu" aria-label="Menu">
   <button type="button" class="link" data-act="pick" style="--i:0"><span class="roll"><span data-t="choose folder">choose folder</span></span></button>
-  <button type="button" class="link" data-act="files" style="--i:1"><span class="roll"><span data-t="choose photos">choose photos</span></span></button>
-  <button type="button" class="link" data-act="photos" style="--i:2"><span class="roll"><span data-t="photos">photos</span></span></button>
-  <button type="button" class="link" data-act="organize" style="--i:3"><span class="roll"><span data-t="organize">organize</span></span></button>
-  <button type="button" class="link" data-act="dupes" style="--i:4"><span class="roll"><span data-t="find duplicates">find duplicates</span></span></button>
+  <button type="button" class="link" data-act="photos" style="--i:1"><span class="roll"><span data-t="photos">photos</span></span></button>
+  <button type="button" class="link" data-act="organize" style="--i:2"><span class="roll"><span data-t="organize">organize</span></span></button>
+  <button type="button" class="link" data-act="dupes" style="--i:3"><span class="roll"><span data-t="find duplicates">find duplicates</span></span></button>
   <p class="menu-note">Your original photos are never changed.</p>
 </nav>
 
@@ -385,8 +384,7 @@ tr:last-child td { border-bottom: 0; }
   <p class="lede rise" style="--d:700ms">Sort photos into folders by date, camera or what is in them, and find duplicate files.</p>
   <div class="cta rise" style="--d:850ms">
     <button id="pickSource" type="button" class="orb pick"><span class="roll"><span data-t="choose photo folder">choose photo folder</span></span></button>
-    <button id="pickFiles" type="button" class="ghost-btn pickfiles"><span class="roll"><span data-t="choose photos">choose photos</span></span></button>
-    <span id="sourceName" class="path">nothing chosen</span>
+    <span id="sourceName" class="path">no folder chosen</span>
   </div>
 </section>
 
@@ -448,9 +446,8 @@ tr:last-child td { border-bottom: 0; }
     <p id="nomatch" class="nomatch" hidden>No photos match your search or filters.</p>
     <div id="empty" class="empty">
       <p class="big">no photos yet</p>
-      <p>Choose a photo folder, or pick individual photos, to see your pictures here.</p>
+      <p>Choose a photo folder to see your pictures here.</p>
       <button id="pickEmpty" type="button" class="orb pick"><span class="roll"><span data-t="choose photo folder">choose photo folder</span></span></button>
-      <button id="pickEmpty2" type="button" class="ghost-btn pickfiles"><span class="roll"><span data-t="choose photos">choose photos</span></span></button>
     </div>
   </div>
 </section>
@@ -465,13 +462,13 @@ tr:last-child td { border-bottom: 0; }
         <button id="organize" type="button" class="orb" disabled><span class="roll"><span data-t="organize photos">organize photos</span></span></button>
         <button id="dupes" type="button" class="ghost-btn" disabled><span class="roll"><span data-t="find duplicates">find duplicates</span></span></button>
       </div>
-      <p class="hint">Organizing copies the selected photos into a "Sorted" folder inside your photo folder. If you picked individual photos, you will be asked where to save the Sorted folder (Chrome or Edge), or you get a ZIP download. Your originals are not changed.</p>
+      <p class="hint">Organizing copies the selected photos into a "Sorted" folder inside your photo folder. In browsers that cannot write to folders (most phones), you get a ZIP download instead. Your originals are not changed.</p>
     </div>
   </div>
 </section>
 
 <div id="dock" class="dock" role="region" aria-label="Status">
-  <p id="status" aria-live="polite">Choose a photo folder or some photos to see a preview of your pictures.</p>
+  <p id="status" aria-live="polite">Choose a photo folder to see a preview of your pictures.</p>
 </div>
 
 <div id="scrim" class="scrim"></div>
@@ -572,7 +569,7 @@ const progress = {
 
 function refreshButtons() {
   const anySelected = photos.some((p) => p.selected);
-  document.querySelectorAll(".pick, .pickfiles").forEach((b) => { b.disabled = working; });
+  document.querySelectorAll(".pick").forEach((b) => { b.disabled = working; });
   $("selAll").disabled = working || !photos.length;
   $("selNone").disabled = working || !photos.length;
   $("organize").disabled = working || !anySelected;
@@ -580,7 +577,7 @@ function refreshButtons() {
   document.body.classList.toggle("working", working);
   document.querySelectorAll("#menu [data-act]").forEach((b) => {
     const a = b.dataset.act;
-    const off = a === "pick" || a === "files" ? working : a === "organize" ? $("organize").disabled : a === "dupes" ? $("dupes").disabled : false;
+    const off = a === "pick" ? working : a === "organize" ? $("organize").disabled : a === "dupes" ? $("dupes").disabled : false;
     b.setAttribute("aria-disabled", off ? "true" : "false");
   });
 }
@@ -624,7 +621,7 @@ function setMenu(open) {
   label.textContent = open ? "close" : "menu";
   label.dataset.t = label.textContent;
 }
-const MENU_TARGET = { pick: "pickSource", files: "pickFiles", organize: "organize", dupes: "dupes" };
+const MENU_TARGET = { pick: "pickSource", organize: "organize", dupes: "dupes" };
 
 // ---------------------------------------------------------------- INPUT ----
 async function walk(dirHandle, prefix, out) {
@@ -1058,18 +1055,6 @@ async function copyInto(dir, name, file) {
 async function organize() {
   const list = photos.filter((p) => p.selected);
   const mode = checked("mode");
-  // Photos picked one by one have no folder of their own: ask where to put the "Sorted" folder.
-  // This has to happen first, while the click is still fresh (browsers only allow the picker then).
-  let dest = source && source.handle;
-  if (canWrite && !dest) {
-    try { dest = await window.showDirectoryPicker({ mode: "readwrite" }); }
-    catch (err) {
-      setStatus(err && err.name === "AbortError"
-        ? "Cancelled. To organize, choose the folder where the Sorted folder should be saved."
-        : "Could not use that folder (" + (err && err.message ? err.message : err) + "). Pick another folder, not Desktop, Documents or Downloads itself.");
-      return;
-    }
-  }
   if (mode === "content") await classifyPhotos(list);
   let zip = null;
   const zipUsed = new Map();
@@ -1091,7 +1076,7 @@ async function organize() {
         finalName = zipName(zipUsed.get(folder), p.name);
         zip.file(`${folder}/${finalName}`, p.file);
       } else {
-        const dir = await getDir(dest, parts);
+        const dir = await getDir(source.handle, parts);
         finalName = await copyInto(dir, p.name, p.file);
       }
       copied++;
@@ -1121,7 +1106,7 @@ async function organize() {
     ["Failed", String(failed)],
     ["Sorted by", modeLabel],
     ["Folders used", String(perFolder.size)],
-    ["Saved in", zip ? "sorted_photos.zip (downloaded)" : `${dest.name}/${SORTED_FOLDER}`],
+    ["Saved in", zip ? "sorted_photos.zip (downloaded)" : `${source.name}/${SORTED_FOLDER}`],
   ]);
   addTable("Photos per folder", ["Folder", "Photos"],
     [...perFolder.entries()].sort().map(([f, n]) => [f, String(n)]));
@@ -1209,25 +1194,7 @@ async function pickSource() {
   input.click();
 }
 
-// Pick individual photos (works on phones too). There is no parent folder, so organizing asks for a destination.
-function pickPhotos() {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.multiple = true;
-  input.accept = "image/*,.jpg,.jpeg,.png,.tif,.tiff,.webp,.bmp";
-  input.onchange = () => {
-    const all = [...input.files];
-    const found = all.filter((f) => IMAGE_EXTENSIONS.has(extOf(f.name))).map((f) => ({ name: f.name, path: f.name, file: f }));
-    if (!found.length) { setStatus(all.length ? "Those files are not supported photos (use JPG, PNG, WEBP, BMP or TIFF)." : "No photos chosen."); return; }
-    source = { name: "(selected photos)" };
-    $("sourceName").textContent = `${found.length} photo(s) selected`;
-    busy(() => loadPhotos(found));
-  };
-  input.click();
-}
-
 document.querySelectorAll(".pick").forEach((b) => b.addEventListener("click", pickSource));
-document.querySelectorAll(".pickfiles").forEach((b) => b.addEventListener("click", pickPhotos));
 $("q").addEventListener("input", debounce(renderGrid, 120));
 $("photos").addEventListener("change", (e) => {
   if (e.target.name === "order") applyOrder();
