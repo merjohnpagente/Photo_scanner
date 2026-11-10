@@ -338,6 +338,23 @@ tr:last-child td { border-bottom: 0; }
   .ring, #glow { display: none; }
   .ch, .rise { transform: none; opacity: 1; }
 }
+
+/* ---------------------------------------------------------- AI content sort */
+.aibox { max-width: 560px; margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--line); display: grid; gap: 14px; }
+.aibox[hidden] { display: none !important; }
+.aihead { margin: 0; color: var(--muted); font-size: 0.92rem; }
+.aichips { display: flex; flex-wrap: wrap; gap: 8px; }
+.aichip { display: inline-flex; align-items: center; gap: 4px; padding: 6px 6px 6px 14px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--soft); font-size: 0.92rem; }
+.aichip button { border: 0; background: none; color: var(--muted); font: inherit; font-size: 1.15rem; line-height: 1; padding: 0 8px; cursor: pointer; }
+.aichip button:hover { color: var(--o); }
+.airow { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.airow input { flex: 1 1 200px; min-width: 0; padding: 10px 0; border: 0; border-bottom: 1px solid var(--line-strong); background: transparent; color: #fff; font: inherit; border-radius: 0; outline: none; }
+.airow input:focus { border-bottom-color: var(--o); }
+.airow input::placeholder { color: rgba(255, 255, 255, 0.4); }
+.airow .ghost-btn { min-height: 40px; padding: 0 18px; font-size: 0.92rem; }
+.airange { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 0.92rem; }
+.airange input { accent-color: var(--o); flex: 1 1 140px; }
+.airange b { color: #fff; font-weight: 500; min-width: 3ch; }
 </style>
 </head>
 <body>
@@ -354,7 +371,6 @@ tr:last-child td { border-bottom: 0; }
   <button type="button" class="link" data-act="photos" style="--i:1"><span class="roll"><span data-t="photos">photos</span></span></button>
   <button type="button" class="link" data-act="organize" style="--i:2"><span class="roll"><span data-t="organize">organize</span></span></button>
   <button type="button" class="link" data-act="dupes" style="--i:3"><span class="roll"><span data-t="find duplicates">find duplicates</span></span></button>
-  <a class="link" href="ai-sort.html" style="--i:4"><span class="roll"><span data-t="sort by content (AI)">sort by content (AI)</span></span></a>
   <p class="menu-note">Your original photos are never changed.</p>
 </nav>
 
@@ -363,7 +379,7 @@ tr:last-child td { border-bottom: 0; }
   <h1 class="display split" aria-label="photo organizer">
     <span class="line" data-split>photo</span><span class="line" data-split>organizer</span>
   </h1>
-  <p class="lede rise" style="--d:700ms">Sort photos into folders by date or camera, and find duplicate files.</p>
+  <p class="lede rise" style="--d:700ms">Sort photos into folders by date, camera or what is in them, and find duplicate files.</p>
   <div class="cta rise" style="--d:850ms">
     <button id="pickSource" type="button" class="orb pick"><span class="roll"><span data-t="choose photo folder">choose photo folder</span></span></button>
     <span id="sourceName" class="path">no folder chosen</span>
@@ -376,8 +392,22 @@ tr:last-child td { border-bottom: 0; }
     <legend class="sr">Sort photos</legend>
     <label><input type="radio" name="mode" value="date" checked><span class="t">date</span></label>
     <label><input type="radio" name="mode" value="camera"><span class="t">camera</span></label>
+    <label><input type="radio" name="mode" value="content"><span class="t">content (AI)</span></label>
   </fieldset>
-  <p class="hint rise">Photos go into year / month folders, or into one folder per camera.</p>
+  <p id="modeHint" class="hint rise">Photos go into year / month folders, or into one folder per camera.</p>
+  <div id="aiBox" class="aibox" hidden>
+    <p class="aihead">folders for the AI to use</p>
+    <div id="aiChips" class="aichips"></div>
+    <div class="airow">
+      <input id="aiNew" type="text" placeholder="add a folder, e.g. cars, beach, cake" autocomplete="off" aria-label="New folder name">
+      <button id="aiAdd" type="button" class="ghost-btn">add</button>
+      <button id="aiReset" type="button" class="txtbtn">reset</button>
+    </div>
+    <label class="airange">minimum match
+      <input id="aiConf" type="range" min="0" max="90" step="5" value="30"><b id="aiConfVal">30%</b>
+    </label>
+    <p class="hint">The AI runs on your device. The first time it downloads a model (needs internet), then it is cached. Photos it is not sure about go into "Unsorted".</p>
+  </div>
 </section>
 
 <section class="stage" id="photos">
@@ -385,7 +415,7 @@ tr:last-child td { border-bottom: 0; }
     <p class="label rise">02 — photos</p>
     <h2 class="title split" aria-label="your photos"><span class="line" data-split>your</span><span class="line" data-split>photos</span></h2>
     <p id="count" class="count">0 photos</p>
-    <p id="support" class="hint" hidden>This browser can't write to folders. Use Chrome or Edge to organize files; here you can still preview photos and find duplicates.</p>
+    <p id="support" class="hint" hidden>This browser can't write to folders. Use Chrome or Edge to organize by date or camera. Content (AI) sort will download a ZIP instead, and you can still preview photos and find duplicates.</p>
 
     <div class="controls">
       <label class="search"><span class="sr">Search photos</span><input id="q" type="search" placeholder="search name or camera" autocomplete="off"></label>
@@ -540,7 +570,7 @@ function refreshButtons() {
   document.querySelectorAll(".pick").forEach((b) => { b.disabled = working; });
   $("selAll").disabled = working || !photos.length;
   $("selNone").disabled = working || !photos.length;
-  $("organize").disabled = working || !canWrite || !anySelected;
+  $("organize").disabled = working || !(canWrite || checked("mode") === "content") || !anySelected;
   $("dupes").disabled = working || !anySelected;
   document.body.classList.toggle("working", working);
   document.querySelectorAll("#menu [data-act]").forEach((b) => {
@@ -867,6 +897,113 @@ function addNote(text) {
   $("results").append(p);
 }
 
+// ------------------------------------------------------- AI CONTENT SORT ----
+// A CLIP model (transformers.js) runs in the browser and matches each photo against the folder names.
+const AI_MODEL = "Xenova/clip-vit-base-patch32";
+const AI_LIB = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1";
+const AI_UNSORTED = "Unsorted";
+const AI_DEFAULTS = [
+  { folder: "Animals",   prompt: "an animal, a pet or wildlife" },
+  { folder: "People",    prompt: "a person or a group of people" },
+  { folder: "Food",      prompt: "food or a drink" },
+  { folder: "Nature",    prompt: "a landscape, mountains, sea or plants" },
+  { folder: "Vehicles",  prompt: "a car, motorcycle, boat or other vehicle" },
+  { folder: "Buildings", prompt: "a building, house or city street" },
+  { folder: "Documents", prompt: "a document, text, a screenshot or a receipt" },
+];
+let aiCats = AI_DEFAULTS.map((c) => ({ ...c }));
+let classifier = null;
+
+function renderAiChips() {
+  const box = $("aiChips");
+  box.replaceChildren();
+  aiCats.forEach((c, i) => {
+    const chip = el("span", "aichip", c.folder);
+    const x = el("button", null, "\u00d7");
+    x.type = "button";
+    x.setAttribute("aria-label", "Remove " + c.folder);
+    x.addEventListener("click", () => { aiCats.splice(i, 1); renderAiChips(); });
+    chip.append(x);
+    box.append(chip);
+  });
+}
+function addAiCat() {
+  const name = $("aiNew").value.trim();
+  if (!name) return;
+  if (!aiCats.some((c) => c.folder.toLowerCase() === name.toLowerCase())) {
+    aiCats.push({ folder: safeName(name), prompt: name.toLowerCase() });
+  }
+  $("aiNew").value = "";
+  renderAiChips();
+}
+
+async function loadClassifier() {
+  if (classifier) return classifier;
+  let lib;
+  try { lib = await import(AI_LIB); }
+  catch (_) { throw new Error("Could not load the AI library. Check your internet connection and try again."); }
+  lib.env.allowLocalModels = false;
+  setStatus("Loading the AI model...");
+  classifier = await lib.pipeline("zero-shot-image-classification", AI_MODEL, {
+    progress_callback: (d) => {
+      if (d.status === "progress" && typeof d.progress === "number") {
+        setStatus(`Downloading the AI model: ${Math.round(d.progress)}%`);
+        progress.set(d.progress / 100);
+      }
+    },
+  });
+  return classifier;
+}
+
+// Gives every photo in the list p.aiLabel / p.aiScore (best matching folder prompt and its score).
+async function classifyPhotos(list) {
+  if (!aiCats.length) throw new Error("Add at least one folder for the AI to use.");
+  const clf = await loadClassifier();
+  const labels = aiCats.map((c) => c.prompt);
+  const sig = labels.join("|");
+  for (let i = 0; i < list.length; i++) {
+    const p = list[i];
+    if (p.aiSig === sig) continue;   // already scanned with these folders
+    setStatus(`Scanning ${i + 1} of ${list.length}: ${p.name}`);
+    progress.set(i / list.length);
+    try {
+      const out = await clf(p.url, labels, { hypothesis_template: "a photo of {}" });
+      p.aiLabel = out[0].label;
+      p.aiScore = out[0].score;
+    } catch (_) {            // e.g. TIFF can't be decoded by browsers
+      p.aiLabel = null;
+      p.aiScore = 0;
+    }
+    p.aiSig = sig;
+  }
+}
+function aiFolder(p) {
+  const min = Number($("aiConf").value) / 100;
+  const cat = aiCats.find((c) => c.prompt === p.aiLabel);
+  return cat && p.aiScore >= min ? safeName(cat.folder) : AI_UNSORTED;
+}
+
+async function loadJSZip() {
+  if (window.JSZip) return;
+  await new Promise((ok, fail) => {
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+    s.onload = ok;
+    s.onerror = () => fail(new Error("Could not load the ZIP library. Check your internet connection."));
+    document.head.append(s);
+  });
+}
+function zipName(used, name) {
+  if (!used.has(name)) { used.add(name); return name; }
+  const i = name.lastIndexOf(".");
+  const base = i < 0 ? name : name.slice(0, i), ext = i < 0 ? "" : name.slice(i);
+  let n = 1;
+  while (used.has(`${base}_${n}${ext}`)) n++;
+  const out = `${base}_${n}${ext}`;
+  used.add(out);
+  return out;
+}
+
 // -------------------------------------------------------------- PROCESS ----
 function safeName(text) {
   const s = text.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/^[ .]+|[ .]+$/g, "");
@@ -912,42 +1049,67 @@ async function copyInto(dir, name, file) {
 }
 
 // Copies the selected photos into  <photo folder>/Sorted/...  (originals are never touched).
+// "content (AI)" mode on a browser that can't write folders builds a ZIP download instead.
 async function organize() {
   const list = photos.filter((p) => p.selected);
   const mode = checked("mode");
+  if (mode === "content") await classifyPhotos(list);
+  let zip = null;
+  const zipUsed = new Map();
+  if (!canWrite) { await loadJSZip(); zip = new JSZip(); }
   const perFolder = new Map();
   const rows = [];
   let copied = 0, failed = 0;
   for (let i = 0; i < list.length; i++) {
     const p = list[i];
-    setStatus(`Copying ${i + 1} of ${list.length}: ${p.name}`);
+    setStatus(`${zip ? "Adding" : "Copying"} ${i + 1} of ${list.length}: ${p.name}`);
     progress.set(i / list.length);
-    const parts = [SORTED_FOLDER, ...targetParts(p.date, p.camera, mode)];
+    const parts = [SORTED_FOLDER, ...(mode === "content" ? [aiFolder(p)] : targetParts(p.date, p.camera, mode))];
     const folder = parts.join("/");
+    const match = mode === "content" ? ` (${Math.round((p.aiScore || 0) * 100)}% match)` : "";
     try {
-      const dir = await getDir(source.handle, parts);
-      const finalName = await copyInto(dir, p.name, p.file);
+      let finalName;
+      if (zip) {
+        if (!zipUsed.has(folder)) zipUsed.set(folder, new Set());
+        finalName = zipName(zipUsed.get(folder), p.name);
+        zip.file(`${folder}/${finalName}`, p.file);
+      } else {
+        const dir = await getDir(source.handle, parts);
+        finalName = await copyInto(dir, p.name, p.file);
+      }
       copied++;
       perFolder.set(folder, (perFolder.get(folder) || 0) + 1);
-      rows.push([p.path, p.camera, fmtDate(p.date), fmtSize(p.size), `Copied to ${folder}/${finalName}`]);
+      rows.push([p.path, p.camera, fmtDate(p.date), fmtSize(p.size), `${zip ? "Added to ZIP" : "Copied to"} ${folder}/${finalName}${match}`]);
     } catch (err) {
       failed++;
       rows.push({ cells: [p.path, p.camera, fmtDate(p.date), fmtSize(p.size), `Failed: ${err.message || err}`], className: "fail" });
     }
   }
+  if (zip && copied) {
+    setStatus("Building the ZIP...");
+    const blob = await zip.generateAsync({ type: "blob", compression: "STORE" }, (m) => progress.set(m.percent / 100));
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "sorted_photos.zip";
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  }
+  const modeLabel = { date: "Date (year / month)", camera: "Camera", content: "Content (AI)" }[mode];
   resetResults("Organize results");
   addSummary([
     ["Photos selected", String(list.length)],
-    ["Copied", String(copied)],
+    [zip ? "Added to ZIP" : "Copied", String(copied)],
     ["Failed", String(failed)],
-    ["Sorted by", mode === "date" ? "Date (year / month)" : "Camera"],
+    ["Sorted by", modeLabel],
     ["Folders used", String(perFolder.size)],
-    ["Saved in", `${source.name}/${SORTED_FOLDER}`],
+    ["Saved in", zip ? "sorted_photos.zip (downloaded)" : `${source.name}/${SORTED_FOLDER}`],
   ]);
   addTable("Photos per folder", ["Folder", "Photos"],
     [...perFolder.entries()].sort().map(([f, n]) => [f, String(n)]));
   addTable("Every photo", ["Photo", "Camera", "Date taken", "Size", "Result"], rows);
-  setStatus(`Done. ${copied} photo(s) copied into ${perFolder.size} folder(s)` + (failed ? `, ${failed} failed.` : "."));
+  setStatus(`Done. ${copied} photo(s) ${zip ? "added to the ZIP in" : "copied into"} ${perFolder.size} folder(s)` + (failed ? `, ${failed} failed.` : "."));
 }
 
 // Sends the selected photos to the API, which returns the groups of identical files.
@@ -1036,6 +1198,23 @@ $("photos").addEventListener("change", (e) => {
   if (e.target.name === "order") applyOrder();
   else if (e.target.name === "view") renderGrid();
 });
+const MODE_HINTS = {
+  date: "Photos go into year / month folders, or into one folder per camera.",
+  camera: "Photos go into year / month folders, or into one folder per camera.",
+  content: "The AI looks at each photo and puts it in a folder like Animals, Food or People.",
+};
+$("sort").addEventListener("change", (e) => {
+  if (e.target.name !== "mode") return;
+  const mode = checked("mode");
+  $("aiBox").hidden = mode !== "content";
+  $("modeHint").textContent = MODE_HINTS[mode];
+  refreshButtons();
+});
+$("aiAdd").addEventListener("click", addAiCat);
+$("aiNew").addEventListener("keydown", (e) => { if (e.key === "Enter") addAiCat(); });
+$("aiReset").addEventListener("click", () => { aiCats = AI_DEFAULTS.map((c) => ({ ...c })); renderAiChips(); });
+$("aiConf").addEventListener("input", () => { $("aiConfVal").textContent = $("aiConf").value + "%"; });
+renderAiChips();
 $("selAll").addEventListener("click", () => setAll(true));
 $("selNone").addEventListener("click", () => setAll(false));
 $("organize").addEventListener("click", () => busy(organize));
@@ -1147,7 +1326,7 @@ for (let i = 0; i < 34; i++) {
 
 if (!canWrite) {
   $("support").hidden = false;
-  $("organize").title = "Organizing needs Chrome or Edge";
+  $("organize").title = "Organizing by date or camera needs Chrome or Edge";
 }
 refreshButtons();
 </script>
