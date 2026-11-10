@@ -465,7 +465,7 @@ tr:last-child td { border-bottom: 0; }
         <button id="organize" type="button" class="orb" disabled><span class="roll"><span data-t="organize photos">organize photos</span></span></button>
         <button id="dupes" type="button" class="ghost-btn" disabled><span class="roll"><span data-t="find duplicates">find duplicates</span></span></button>
       </div>
-      <p class="hint">Organizing copies the selected photos into a "Sorted" folder inside your photo folder. Your originals are not changed.</p>
+      <p class="hint">Organizing copies the selected photos into a "Sorted" folder inside your photo folder. If you picked individual photos, you will be asked where to save the Sorted folder (Chrome or Edge), or you get a ZIP download. Your originals are not changed.</p>
     </div>
   </div>
 </section>
@@ -1063,7 +1063,12 @@ async function organize() {
   let dest = source && source.handle;
   if (canWrite && !dest) {
     try { dest = await window.showDirectoryPicker({ mode: "readwrite" }); }
-    catch (_) { setStatus("Cancelled. Choose where the Sorted folder should go to organize."); return; }
+    catch (err) {
+      setStatus(err && err.name === "AbortError"
+        ? "Cancelled. To organize, choose the folder where the Sorted folder should be saved."
+        : "Could not use that folder (" + (err && err.message ? err.message : err) + "). Pick another folder, not Desktop, Documents or Downloads itself.");
+      return;
+    }
   }
   if (mode === "content") await classifyPhotos(list);
   let zip = null;
