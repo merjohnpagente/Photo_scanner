@@ -357,6 +357,17 @@ tr:last-child td { border-bottom: 0; }
 .airange { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; color: var(--muted); font-size: 0.92rem; }
 .airange input { accent-color: var(--o); flex: 1 1 140px; }
 .airange b { color: #fff; font-weight: 500; min-width: 3ch; }
+
+.airange select { flex: 1 1 200px; min-width: 0; padding: 9px 12px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--soft); color: #fff; font: inherit; font-size: 0.92rem; }
+.aicheck { display: flex; align-items: center; gap: 10px; color: #fff; font-size: 0.92rem; cursor: pointer; }
+.aicheck input { accent-color: var(--o); width: 18px; height: 18px; }
+.review { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 14px; margin: 14px 0 20px; }
+.rcard { min-width: 0; font-size: 0.82rem; }
+.rcard img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 12px; background: var(--soft); }
+.rname { margin-top: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rguess { margin: 2px 0 6px; color: var(--muted); font-size: 0.76rem; }
+.rcard select { width: 100%; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--soft); color: #fff; font: inherit; font-size: 0.85rem; }
+.ractions { position: sticky; bottom: 0; display: flex; gap: 12px; align-items: center; padding: 14px 0; background: linear-gradient(0deg, #0b0b0b 70%, transparent); }
 </style>
 </head>
 <body>
@@ -405,10 +416,17 @@ tr:last-child td { border-bottom: 0; }
       <button id="aiAdd" type="button" class="ghost-btn">add</button>
       <button id="aiReset" type="button" class="txtbtn">reset</button>
     </div>
+    <label class="airange">accuracy
+      <select id="aiModel">
+        <option value="better">better (slower, bigger first download)</option>
+        <option value="fast">faster (less accurate)</option>
+      </select>
+    </label>
+    <label class="aicheck"><input type="checkbox" id="aiReview" checked> check the AI's guesses before copying</label>
     <label class="airange">minimum match
       <input id="aiConf" type="range" min="0" max="90" step="5" value="30"><b id="aiConfVal">30%</b>
     </label>
-    <p class="hint">The AI runs on your device. The first time it downloads a model (needs internet), then it is cached. Photos it is not sure about go into "Unsorted".</p>
+    <p class="hint">The AI runs on your device. The first time it downloads a model (needs internet), then it is cached. Photos it is not sure about go into "Unsorted". You can fix any wrong guess before copying.</p>
   </div>
 </section>
 
@@ -605,6 +623,7 @@ function openSheet(id) {
   requestAnimationFrame(() => sheet.querySelector("[data-close]").focus({ preventScroll: true }));
 }
 function closeSheets(keepFocus) {
+  if (reviewResolve) { const r = reviewResolve; reviewResolve = null; r(false); }   // closing the AI review = cancel
   const open = document.querySelectorAll(".sheet.open");
   open.forEach((s) => s.classList.remove("open"));
   $("scrim").classList.remove("on");
@@ -900,21 +919,25 @@ function addNote(text) {
 }
 
 // ------------------------------------------------------- AI CONTENT SORT ----
-// A CLIP model (transformers.js) runs in the browser and matches each photo against the folder names.
-const AI_MODEL = "Xenova/clip-vit-base-patch32";
+// A CLIP model (transformers.js) runs in the browser. Every folder has several prompts
+// ("a dog", "a cat", "a pet"...). A photo's score for a folder is the sum of its prompts' scores.
+const AI_MODELS = { better: "Xenova/clip-vit-base-patch16", fast: "Xenova/clip-vit-base-patch32" };
 const AI_LIB = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1";
 const AI_UNSORTED = "Unsorted";
+// Prompts that mean "none of the folders": if they win, the photo goes to Unsorted.
+const AI_OTHER = ["a close-up of an object", "an abstract pattern or texture", "a very blurry or dark picture"];
 const AI_DEFAULTS = [
-  { folder: "Animals",   prompt: "an animal, a pet or wildlife" },
-  { folder: "People",    prompt: "a person or a group of people" },
-  { folder: "Food",      prompt: "food or a drink" },
-  { folder: "Nature",    prompt: "a landscape, mountains, sea or plants" },
-  { folder: "Vehicles",  prompt: "a car, motorcycle, boat or other vehicle" },
-  { folder: "Buildings", prompt: "a building, house or city street" },
-  { folder: "Documents", prompt: "a document, text, a screenshot or a receipt" },
+  { folder: "People",    prompts: ["a person", "a group of people", "a selfie", "a portrait of a face", "a family", "a crowd of people"] },
+  { folder: "Animals",   prompts: ["a dog", "a cat", "a bird", "an animal", "wildlife", "a pet", "a farm animal", "a fish"] },
+  { folder: "Food",      prompts: ["food", "a meal on a plate", "a drink", "a dessert", "fruit", "a dish in a restaurant"] },
+  { folder: "Nature",    prompts: ["a landscape", "mountains", "the sea or a beach", "a forest", "flowers", "the sky and clouds", "a sunset"] },
+  { folder: "Vehicles",  prompts: ["a car", "a motorcycle", "a boat", "a bus", "a truck", "an airplane", "a bicycle"] },
+  { folder: "Buildings", prompts: ["a building", "a house", "a city street", "a church", "a bridge"] },
+  { folder: "Documents", prompts: ["a screenshot of a phone or computer", "a document with text", "a receipt", "a page of a book", "a poster with text"] },
 ];
-let aiCats = AI_DEFAULTS.map((c) => ({ ...c }));
-let classifier = null;
+let aiCats = AI_DEFAULTS.map((c) => ({ folder: c.folder, prompts: [...c.prompts] }));
+const classifiers = {};   // model key -> pipeline
+let reviewResolve = null;
 
 function renderAiChips() {
   const box = $("aiChips");
@@ -933,20 +956,20 @@ function addAiCat() {
   const name = $("aiNew").value.trim();
   if (!name) return;
   if (!aiCats.some((c) => c.folder.toLowerCase() === name.toLowerCase())) {
-    aiCats.push({ folder: safeName(name), prompt: name.toLowerCase() });
+    aiCats.push({ folder: safeName(name), prompts: [name.toLowerCase()] });
   }
   $("aiNew").value = "";
   renderAiChips();
 }
 
-async function loadClassifier() {
-  if (classifier) return classifier;
+async function loadClassifier(key) {
+  if (classifiers[key]) return classifiers[key];
   let lib;
   try { lib = await import(AI_LIB); }
   catch (_) { throw new Error("Could not load the AI library. Check your internet connection and try again."); }
   lib.env.allowLocalModels = false;
   setStatus("Loading the AI model...");
-  classifier = await lib.pipeline("zero-shot-image-classification", AI_MODEL, {
+  classifiers[key] = await lib.pipeline("zero-shot-image-classification", AI_MODELS[key], {
     progress_callback: (d) => {
       if (d.status === "progress" && typeof d.progress === "number") {
         setStatus(`Downloading the AI model: ${Math.round(d.progress)}%`);
@@ -954,35 +977,81 @@ async function loadClassifier() {
       }
     },
   });
-  return classifier;
+  return classifiers[key];
 }
 
-// Gives every photo in the list p.aiLabel / p.aiScore (best matching folder prompt and its score).
+// Gives every photo p.aiScores = [{ folder, score }] sorted from best to worst (scores add up to 1).
 async function classifyPhotos(list) {
   if (!aiCats.length) throw new Error("Add at least one folder for the AI to use.");
-  const clf = await loadClassifier();
-  const labels = aiCats.map((c) => c.prompt);
-  const sig = labels.join("|");
+  const key = $("aiModel").value;
+  const clf = await loadClassifier(key);
+  const owner = new Map();
+  for (const c of aiCats) for (const t of c.prompts) if (!owner.has(t)) owner.set(t, c.folder);
+  for (const t of AI_OTHER) if (!owner.has(t)) owner.set(t, AI_UNSORTED);
+  const labels = [...owner.keys()];
+  const sig = key + "|" + labels.join("|");
   for (let i = 0; i < list.length; i++) {
     const p = list[i];
     if (p.aiSig === sig) continue;   // already scanned with these folders
     setStatus(`Scanning ${i + 1} of ${list.length}: ${p.name}`);
     progress.set(i / list.length);
+    p.aiChoice = null;
     try {
       const out = await clf(p.url, labels, { hypothesis_template: "a photo of {}" });
-      p.aiLabel = out[0].label;
-      p.aiScore = out[0].score;
+      const sum = new Map();
+      for (const o of out) sum.set(owner.get(o.label), (sum.get(owner.get(o.label)) || 0) + o.score);
+      p.aiScores = [...sum.entries()].map(([folder, score]) => ({ folder, score })).sort((x, y) => y.score - x.score);
     } catch (_) {            // e.g. TIFF can't be decoded by browsers
-      p.aiLabel = null;
-      p.aiScore = 0;
+      p.aiScores = [{ folder: AI_UNSORTED, score: 0 }];
     }
     p.aiSig = sig;
   }
 }
 function aiFolder(p) {
   const min = Number($("aiConf").value) / 100;
-  const cat = aiCats.find((c) => c.prompt === p.aiLabel);
-  return cat && p.aiScore >= min ? safeName(cat.folder) : AI_UNSORTED;
+  const best = p.aiScores && p.aiScores[0];
+  return best && best.folder !== AI_UNSORTED && best.score >= min ? best.folder : AI_UNSORTED;
+}
+
+// Shows every photo with the AI's top guesses so wrong ones can be fixed before anything is copied.
+function reviewAI(list) {
+  return new Promise((resolve) => {
+    resetResults("Check the AI's guesses");
+    reviewResolve = resolve;
+    addNote("Change the folder of any photo the AI got wrong. Nothing is copied until you press the button.");
+    const names = [...aiCats.map((c) => c.folder), AI_UNSORTED];
+    const grid = el("div", "review");
+    for (const p of list) {
+      const card = el("div", "rcard");
+      const img = document.createElement("img");
+      img.loading = "lazy"; img.alt = p.name; img.src = p.url;
+      const nm = el("div", "rname", p.name);
+      nm.title = p.path;
+      const guess = el("div", "rguess", (p.aiScores || []).slice(0, 3).map((g) => `${g.folder} ${Math.round(g.score * 100)}%`).join(" \u00b7 "));
+      const sel = document.createElement("select");
+      sel.setAttribute("aria-label", "Folder for " + p.name);
+      p.aiChoice = aiFolder(p);
+      for (const n of names) {
+        const o = document.createElement("option");
+        o.value = o.textContent = n;
+        if (n === p.aiChoice) o.selected = true;
+        sel.append(o);
+      }
+      sel.addEventListener("change", () => { p.aiChoice = sel.value; });
+      card.append(img, nm, guess, sel);
+      grid.append(card);
+    }
+    const actions = el("div", "ractions");
+    const go = el("button", "orb");
+    go.type = "button";
+    go.innerHTML = '<span class="roll"><span data-t="copy into folders">copy into folders</span></span>';
+    go.addEventListener("click", () => { reviewResolve = null; closeSheets(); resolve(true); });
+    const cancel = el("button", "ghost-btn", "cancel");
+    cancel.type = "button";
+    cancel.addEventListener("click", () => closeSheets());
+    actions.append(go, cancel);
+    $("results").append(grid, actions);
+  });
 }
 
 async function loadJSZip() {
@@ -1055,7 +1124,14 @@ async function copyInto(dir, name, file) {
 async function organize() {
   const list = photos.filter((p) => p.selected);
   const mode = checked("mode");
-  if (mode === "content") await classifyPhotos(list);
+  if (mode === "content") {
+    await classifyPhotos(list);
+    if ($("aiReview").checked) {
+      setStatus("Check the AI's guesses, then press copy into folders.");
+      progress.set(1);
+      if (!(await reviewAI(list))) { setStatus("Cancelled. Nothing was copied."); return; }
+    }
+  }
   let zip = null;
   const zipUsed = new Map();
   if (!canWrite) { await loadJSZip(); zip = new JSZip(); }
@@ -1066,9 +1142,9 @@ async function organize() {
     const p = list[i];
     setStatus(`${zip ? "Adding" : "Copying"} ${i + 1} of ${list.length}: ${p.name}`);
     progress.set(i / list.length);
-    const parts = [SORTED_FOLDER, ...(mode === "content" ? [aiFolder(p)] : targetParts(p.date, p.camera, mode))];
+    const parts = [SORTED_FOLDER, ...(mode === "content" ? [safeName(p.aiChoice || aiFolder(p))] : targetParts(p.date, p.camera, mode))];
     const folder = parts.join("/");
-    const match = mode === "content" ? ` (${Math.round((p.aiScore || 0) * 100)}% match)` : "";
+    const match = mode === "content" ? (p.aiChoice && p.aiChoice !== aiFolder(p) ? " (changed by you)" : ` (${Math.round(((p.aiScores && p.aiScores[0] && p.aiScores[0].score) || 0) * 100)}% match)`) : "";
     try {
       let finalName;
       if (zip) {
@@ -1214,7 +1290,7 @@ $("sort").addEventListener("change", (e) => {
 });
 $("aiAdd").addEventListener("click", addAiCat);
 $("aiNew").addEventListener("keydown", (e) => { if (e.key === "Enter") addAiCat(); });
-$("aiReset").addEventListener("click", () => { aiCats = AI_DEFAULTS.map((c) => ({ ...c })); renderAiChips(); });
+$("aiReset").addEventListener("click", () => { aiCats = AI_DEFAULTS.map((c) => ({ folder: c.folder, prompts: [...c.prompts] })); renderAiChips(); });
 $("aiConf").addEventListener("input", () => { $("aiConfVal").textContent = $("aiConf").value + "%"; });
 renderAiChips();
 $("selAll").addEventListener("click", () => setAll(true));
