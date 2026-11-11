@@ -456,6 +456,9 @@ tr:last-child td { border-bottom: 0; }
       </select>
     </label>
     <label class="aicheck"><input type="checkbox" id="aiReview"> check the AI's guesses before copying</label>
+    <label class="airange" id="aiConfRow">minimum match (low = sort more photos, high = too strict, many go to Unsorted)
+      <input id="aiConf" type="range" min="0" max="70" step="5" value="25"><b id="aiConfVal">25%</b>
+    </label>
     <p class="hint">The AI runs on your device. The first time it downloads a model (needs internet), then it is cached. Photos it is not sure about go into "Unsorted". You can fix any wrong guess before copying.</p>
   </div>
 </section>
@@ -970,7 +973,6 @@ function addNote(text) {
 const AI_MODELS = { better: "Xenova/clip-vit-base-patch16", fast: "Xenova/clip-vit-base-patch32" };
 const AI_LIB = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1";
 const AI_UNSORTED = "Unsorted";
-const AI_MIN_MATCH = 0.25;   // fixed: a photo needs at least 25% match to leave Unsorted
 // Prompts that mean "none of the folders": if they win, the photo goes to Unsorted.
 const AI_OTHER = ["a close-up of an object", "an abstract pattern or texture", "a very blurry or dark picture"];
 const AI_DEFAULTS = [
@@ -1284,7 +1286,7 @@ function aiFolder(p) {
     if (!pick) return AI_UNSORTED;
     return autoFolders.get(pick.concept) || pick.group;
   }
-  const min = AI_MIN_MATCH;
+  const min = Number($("aiConf").value) / 100;
   const best = p.aiScores && p.aiScores[0];
   return best && best.folder !== AI_UNSORTED && best.score >= min ? best.folder : AI_UNSORTED;
 }
@@ -1385,7 +1387,7 @@ function autoPick(p) {
   }
   let group = null, gs = 0;
   for (const [g, v] of sums) if (v > gs) { gs = v; group = g; }
-  if (!group || gs < AI_MIN_MATCH) return null;
+  if (!group || gs < Number($("aiConf").value) / 100) return null;
   return { group, concept: best.get(group).folder };
 }
 
@@ -1874,6 +1876,11 @@ $("aiAuto").addEventListener("change", syncAuto);
 $("aiAdd").addEventListener("click", addAiCat);
 $("aiNew").addEventListener("keydown", (e) => { if (e.key === "Enter") addAiCat(); });
 $("aiReset").addEventListener("click", () => { aiCats = AI_DEFAULTS.map((c) => ({ folder: c.folder, prompts: [...c.prompts] })); renderAiChips(); });
+$("aiConf").addEventListener("input", () => {
+  $("aiConfVal").textContent = $("aiConf").value + "%";
+  photos.forEach((p) => { if (!p.aiManual) p.aiChoice = null; });
+  renderCats();
+});
 $("catSave").addEventListener("click", () => busy(organize));
 renderAiChips();
 if (navigator.gpu && !IS_MOBILE) $("aiModel").value = "better";   // a GPU makes the more accurate model fast enough
