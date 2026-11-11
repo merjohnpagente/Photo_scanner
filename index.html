@@ -1057,6 +1057,16 @@ function addAiCat() {
   renderCats();
 }
 
+// Phones often "support" WebGPU but freeze while starting the big model (it never errors, it just hangs).
+// So on phones we use the CPU (WASM) path, and every start-up step has a time limit.
+const IS_MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
+  (navigator.maxTouchPoints > 1 && !matchMedia("(pointer: fine)").matches);
+function withTimeout(promise, ms, what) {
+  let t;
+  const limit = new Promise((_, reject) => { t = setTimeout(() => reject(new Error(what + " took too long")), ms); });
+  return Promise.race([promise, limit]).finally(() => clearTimeout(t));
+}
+
 async function loadClassifier(key, noGpu) {
   if (classifiers[key] && !noGpu) return classifiers[key];
   let lib;
@@ -1069,29 +1079,33 @@ async function loadClassifier(key, noGpu) {
     if (d.status === "progress" && typeof d.progress === "number") {
       setStatus(`Downloading the AI model: ${Math.round(d.progress)}%`);
       progress.set(d.progress / 100);
+      if (d.progress >= 100) setStatus("Starting the AI model (can take a minute on a phone)...");
     }
   };
   let eng = null;
   try {
     // Fast path: the text of the folders is embedded ONCE, then every photo only needs the image half.
-    const tokenizer = await lib.AutoTokenizer.from_pretrained(id);
-    const processor = await lib.AutoProcessor.from_pretrained(id);
+    const tokenizer = await withTimeout(lib.AutoTokenizer.from_pretrained(id), 120000, "Loading the tokenizer");
+    const processor = await withTimeout(lib.AutoProcessor.from_pretrained(id), 120000, "Loading the image processor");
     // Try the phone's GPU first (WebGPU), then the quantized (smaller, faster) CPU model, then the plain CPU model.
     const attempts = [];
-    if (!noGpu && navigator.gpu) attempts.push({ device: "webgpu", dtype: "fp32" });
+    if (!noGpu && !IS_MOBILE && navigator.gpu) attempts.push({ device: "webgpu", dtype: "fp32" });
     attempts.push({ device: "wasm", dtype: "q8" }, { device: "wasm" });
     for (const a of attempts) {
       try {
         const o = { progress_callback: cb, ...a };
-        const textModel = await lib.CLIPTextModelWithProjection.from_pretrained(id, o);
-        const visionModel = await lib.CLIPVisionModelWithProjection.from_pretrained(id, o);
+        const ms = a.device === "webgpu" ? 60000 : 240000;   // a hung GPU start falls back to the CPU
+        const textModel = await withTimeout(lib.CLIPTextModelWithProjection.from_pretrained(id, o), ms, "Starting the text model");
+        const visionModel = await withTimeout(lib.CLIPVisionModelWithProjection.from_pretrained(id, o), ms, "Starting the image model");
         eng = { lib, fast: true, device: a.device, tokenizer, processor, textModel, visionModel, labelSig: "", labelVecs: null };
         break;
       } catch (_) { /* try the next way */ }
     }
     if (!eng) throw new Error("no fast model");
   } catch (_) {
-    const pipe = await lib.pipeline("zero-shot-image-classification", id, { progress_callback: cb });
+    setStatus("Starting the AI model (backup way)...");
+    const pipe = await withTimeout(lib.pipeline("zero-shot-image-classification", id, { progress_callback: cb }), 300000,
+      "Starting the AI model. Try the Fast model, or close other apps to free memory. It");
     eng = { lib, fast: false, device: "wasm", pipe };
   }
   classifiers[key] = eng;
@@ -1707,7 +1721,7 @@ $("aiConf").addEventListener("input", () => {
 });
 $("catSave").addEventListener("click", () => busy(organize));
 renderAiChips();
-if (navigator.gpu) $("aiModel").value = "better";   // a GPU makes the more accurate model fast enough
+if (navigator.gpu && !IS_MOBILE) $("aiModel").value = "better";   // a GPU makes the more accurate model fast enough
 renderCats();
 $("selAll").addEventListener("click", () => setAll(true));
 $("selNone").addEventListener("click", () => setAll(false));
