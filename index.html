@@ -345,6 +345,8 @@ tr:last-child td { border-bottom: 0; }
 .aibox { max-width: 560px; margin-top: 26px; padding-top: 22px; border-top: 1px solid var(--line); display: grid; gap: 14px; }
 .aibox[hidden] { display: none !important; }
 .aihead { margin: 0; color: var(--muted); font-size: 0.92rem; }
+.aiblock { display: grid; gap: 14px; }
+.aiblock[hidden] { display: none !important; }
 .aichips { display: flex; flex-wrap: wrap; gap: 8px; }
 .aichip { display: inline-flex; align-items: center; gap: 4px; padding: 6px 6px 6px 14px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--soft); font-size: 0.92rem; }
 .aichip button { border: 0; background: none; color: var(--muted); font: inherit; font-size: 1.15rem; line-height: 1; padding: 0 8px; cursor: pointer; }
@@ -426,14 +428,17 @@ tr:last-child td { border-bottom: 0; }
     <label><input type="radio" name="mode" value="camera"><span class="t">camera</span></label>
     <label><input type="radio" name="mode" value="content" checked><span class="t">content (AI)</span></label>
   </fieldset>
-  <p id="modeHint" class="hint rise">The AI looks at each photo and puts it in a folder like Animals, Food or People.</p>
+  <p id="modeHint" class="hint rise">The AI looks at each photo and names the folders by itself, like Dogs, Beaches or Food.</p>
   <div id="aiBox" class="aibox">
+    <label class="aicheck"><input type="checkbox" id="aiAuto" checked> the AI names the folders by itself (recommended)</label>
+    <div id="aiManual" class="aiblock" hidden>
     <p class="aihead">folders for the AI to use</p>
     <div id="aiChips" class="aichips"></div>
     <div class="airow">
       <input id="aiNew" type="text" placeholder="add a folder, e.g. cars, beach, cake" autocomplete="off" aria-label="New folder name">
       <button id="aiAdd" type="button" class="ghost-btn">add</button>
       <button id="aiReset" type="button" class="txtbtn">reset</button>
+    </div>
     </div>
     <label class="airange">accuracy
       <select id="aiModel">
@@ -442,8 +447,8 @@ tr:last-child td { border-bottom: 0; }
       </select>
     </label>
     <label class="aicheck"><input type="checkbox" id="aiReview"> check the AI's guesses before copying</label>
-    <label class="airange">minimum match
-      <input id="aiConf" type="range" min="0" max="90" step="5" value="30"><b id="aiConfVal">30%</b>
+    <label class="airange" id="aiConfRow">minimum match (higher = more accurate, more Unsorted)
+      <input id="aiConf" type="range" min="0" max="90" step="5" value="25"><b id="aiConfVal">25%</b>
     </label>
     <p class="hint">The AI runs on your device. The first time it downloads a model (needs internet), then it is cached. Photos it is not sure about go into "Unsorted". You can fix any wrong guess before copying.</p>
   </div>
@@ -971,6 +976,60 @@ const AI_DEFAULTS = [
   { folder: "Documents", prompts: ["a screenshot of a phone or computer", "a document with text", "a receipt", "a page of a book", "a poster with text"] },
 ];
 let aiCats = AI_DEFAULTS.map((c) => ({ folder: c.folder, prompts: [...c.prompts] }));
+
+// ---- automatic folder names ----
+// The AI compares every photo with ~70 everyday things (a dog, a beach, a cake ...). The things that show up
+// often become folders named after them. Rare things are merged into their bigger group (Animals, Places ...).
+const AUTO_GROUPS = {
+  Animals: [
+    ["Dogs", "a dog", "a puppy", "a pet dog"], ["Cats", "a cat", "a kitten", "a pet cat"],
+    ["Birds", "a bird", "a bird flying", "a parrot or an eagle"], ["Fish", "a fish", "an aquarium", "fish underwater"],
+    ["Farm animals", "a cow in a field", "a goat or a pig", "a horse"], ["Wildlife", "a wild animal", "a monkey or a deer", "an elephant or a lion"],
+    ["Insects", "an insect", "a butterfly", "a bee or a spider"]],
+  Nature: [
+    ["Mountains", "mountains", "a mountain peak", "a hill with a view"], ["Flowers", "flowers", "a flower close-up", "a garden with flowers"],
+    ["Trees and forests", "a forest", "trees", "a jungle path"], ["Sunsets", "a sunset", "a sunrise", "an orange sky at dusk"],
+    ["Sky and clouds", "clouds in the sky", "a blue sky", "a rainbow"], ["Rivers and waterfalls", "a river", "a waterfall", "a lake or a pond"],
+    ["Farms and fields", "a rice field", "a farm", "a green field"], ["Snow", "snow", "a snowy landscape", "ice and snow"]],
+  Places: [
+    ["Beaches", "a beach", "the sea and waves", "a tropical island"], ["Buildings", "a tall building", "a skyscraper", "an office building"],
+    ["Houses", "a house", "the outside of a home", "a village house"], ["Streets", "a city street", "a road with traffic", "a town at night"],
+    ["Churches", "a church", "a cathedral", "a temple or a mosque"], ["Bridges", "a bridge", "a long bridge over water", "a footbridge"],
+    ["Landmarks", "a famous landmark", "a monument or a statue", "a tourist attraction"], ["Rooms", "a bedroom", "a living room", "the inside of a room"],
+    ["Cafes and restaurants", "a restaurant interior", "a cafe", "people dining at a table"], ["Markets", "a market", "a street market with stalls", "a supermarket shelf"],
+    ["Schools", "a classroom", "a school building", "students in school"]],
+  Food: [
+    ["Meals", "a meal on a plate", "a plate of rice and viand", "a home cooked dish"], ["Fruit", "fruit", "a bunch of bananas or mangoes", "a fruit stand"],
+    ["Drinks", "a drink in a glass", "a cup of coffee", "a bottle of soda or milk tea"], ["Desserts", "a cake", "a dessert", "ice cream"],
+    ["Fast food", "pizza", "a burger", "fried chicken and fries"]],
+  Vehicles: [
+    ["Cars", "a car", "a car on the road", "a parked car"], ["Motorcycles", "a motorcycle", "a scooter", "a person riding a motorbike"],
+    ["Boats", "a boat", "a ship", "a small fishing boat"], ["Buses", "a bus", "a minibus or a jeepney", "a passenger van"],
+    ["Trucks", "a truck", "a pickup truck", "a construction vehicle"], ["Airplanes", "an airplane", "an airplane in the sky", "an airport"],
+    ["Bicycles", "a bicycle", "a person riding a bike", "a parked bike"], ["Trains", "a train", "a train station", "railway tracks"]],
+  People: [
+    ["Selfies", "a selfie", "a close-up selfie of a face", "a person taking a selfie with a phone"], ["Portraits", "a portrait of a person", "a headshot", "a person posing alone"],
+    ["Group photos", "a group of people posing", "a group photo of friends", "a team photo"], ["Family", "a family", "parents and children", "a family gathering"],
+    ["Couples", "a couple", "two people in love", "a couple posing together"], ["Kids", "a baby", "a child", "kids playing"],
+    ["Crowds", "a crowd of people", "a festival or a parade", "people at an event"], ["Weddings", "a wedding", "a bride and groom", "a wedding dress"],
+    ["Parties", "a birthday party", "a party with balloons", "people celebrating"], ["Graduations", "a graduation", "a person in a graduation toga", "a diploma ceremony"],
+    ["Sports", "people playing sports", "a basketball game", "a football or volleyball match"]],
+  Documents: [
+    ["Screenshots", "a screenshot of a phone screen", "a screenshot of a chat", "a screenshot of an app"], ["Documents", "a document with text", "a printed paper", "a form or a certificate"],
+    ["Receipts", "a receipt", "a bill or an invoice", "a shopping receipt"], ["ID cards", "an ID card", "a driver's license", "a passport page"],
+    ["Memes and posters", "a meme with text", "a poster with text", "a quote graphic"], ["Book pages", "a page of a book", "a notebook with handwriting", "a textbook"]],
+  Things: [
+    ["Gadgets", "a smartphone", "a laptop computer", "an electronic gadget"], ["Clothes", "clothes", "a pair of shoes", "a bag or a fashion item"],
+    ["Art", "a painting", "a drawing", "an artwork"], ["Toys", "a toy", "a stuffed toy", "toy cars or dolls"], ["Furniture", "a chair or a sofa", "a table", "furniture"]],
+};
+const AUTO_CATS = [], AUTO_GROUP_OF = new Map();
+for (const [g, items] of Object.entries(AUTO_GROUPS)) {
+  for (const [folder, ...prompts] of items) { AUTO_CATS.push({ folder, prompts }); AUTO_GROUP_OF.set(folder, g); }
+}
+const AUTO_MAX = 14;                 // at most this many named folders, the rest go into their group
+let autoFolders = new Map();         // concept (e.g. "Dogs") -> folder it ends up in
+const autoOn = () => $("aiAuto").checked;
+const activeCats = () => (autoOn() ? AUTO_CATS : aiCats);
 const classifiers = {};   // model key -> pipeline
 let reviewResolve = null;
 
@@ -1046,11 +1105,26 @@ const unitVec = (arr) => {
   return Array.from(arr, (x) => x / n);
 };
 
+// CLIP works best when every label is written in several sentence styles and the results are averaged.
+const AI_TEMPLATES = ["a photo of {}", "a picture of {}", "a close-up photo of {}"];
 async function embedLabels(eng, labels) {
-  const inputs = eng.tokenizer(labels.map((l) => "a photo of " + l), { padding: true, truncation: true });
-  const { text_embeds } = await eng.textModel(inputs);
-  const d = text_embeds.dims[text_embeds.dims.length - 1], data = text_embeds.data;
-  return labels.map((_, i) => unitVec(data.subarray(i * d, (i + 1) * d)));
+  const texts = [];
+  for (const l of labels) for (const t of AI_TEMPLATES) texts.push(t.replace("{}", l));
+  const out = [];
+  for (let i = 0; i < texts.length; i += 96) {   // small pieces so a phone does not run out of memory
+    const inputs = eng.tokenizer(texts.slice(i, i + 96), { padding: true, truncation: true });
+    const { text_embeds } = await eng.textModel(inputs);
+    const d = text_embeds.dims[text_embeds.dims.length - 1], data = text_embeds.data;
+    for (let k = 0; k < text_embeds.dims[0]; k++) out.push(unitVec(data.subarray(k * d, (k + 1) * d)));
+    await new Promise((r) => setTimeout(r));
+  }
+  const n = AI_TEMPLATES.length;
+  return labels.map((_, i) => meanVec(out.slice(i * n, (i + 1) * n)));
+}
+function meanVec(vecs) {
+  const m = new Array(vecs[0].length).fill(0);
+  for (const v of vecs) for (let i = 0; i < m.length; i++) m[i] += v[i];
+  return unitVec(m);
 }
 
 // Decodes the photo at a small size (about 256 px wide). The model only looks at 224 px anyway,
@@ -1103,17 +1177,26 @@ async function runBatch(eng, chunk, labels) {
 
 // Gives every photo p.aiScores = [{ folder, score }] sorted from best to worst (scores add up to 1).
 async function classifyPhotos(list, onEach) {
-  if (!aiCats.length) throw new Error("Add at least one folder for the AI to use.");
+  const cats = activeCats();
+  if (!cats.length) throw new Error("Add at least one folder for the AI to use.");
   const key = $("aiModel").value;
   let eng = await loadClassifier(key);
   const owner = new Map();
-  for (const c of aiCats) for (const t of c.prompts) if (!owner.has(t)) owner.set(t, c.folder);
+  for (const c of cats) for (const t of c.prompts) if (!owner.has(t)) owner.set(t, c.folder);
   for (const t of AI_OTHER) if (!owner.has(t)) owner.set(t, AI_UNSORTED);
   const labels = [...owner.keys()];
   const sig = key + "|" + labels.join("|");
   const prepare = async () => {
-    if (eng.fast && eng.labelSig !== sig) { eng.labelVecs = await embedLabels(eng, labels); eng.labelSig = sig; }
+    if (eng.fast && eng.labelSig !== sig) {
+      setStatus("Preparing the categories...");
+      const vecs = await embedLabels(eng, labels);
+      const names = [...new Set(owner.values())];
+      eng.labelNames = names;
+      eng.labelVecs = names.map((n) => meanVec(vecs.filter((_, i) => owner.get(labels[i]) === n)));   // one vector per folder
+      eng.labelSig = sig;
+    }
   };
+  const names = () => (eng.fast ? eng.labelNames : labels);
   await prepare();
   const todo = list.filter((p) => p.aiSig !== sig);   // photos already scanned with these folders are skipped
   const already = list.length - todo.length;
@@ -1123,11 +1206,11 @@ async function classifyPhotos(list, onEach) {
     setStatus(`Scanning ${already + i + 1} of ${list.length}...`);
     progress.set((already + i) / list.length);
     let outs;
-    try { outs = await runBatch(eng, chunk, labels); }
+    try { outs = await runBatch(eng, chunk, names()); }
     catch (_) {
       outs = chunk.map(() => null);
       if (eng.device === "webgpu") {   // the GPU failed: switch to the CPU and try this batch again
-        try { eng = await loadClassifier(key, true); await prepare(); outs = await runBatch(eng, chunk, labels); } catch (_) {}
+        try { eng = await loadClassifier(key, true); await prepare(); outs = await runBatch(eng, chunk, names()); } catch (_) {}
       }
     }
     chunk.forEach((p, k) => {
@@ -1135,7 +1218,7 @@ async function classifyPhotos(list, onEach) {
       const out = outs[k];
       if (out) {
         const sum = new Map();
-        for (const o of out) sum.set(owner.get(o.label), (sum.get(owner.get(o.label)) || 0) + o.score);
+        for (const o of out) { const f = eng.fast ? o.label : owner.get(o.label); sum.set(f, (sum.get(f) || 0) + o.score); }
         p.aiScores = [...sum.entries()].map(([folder, score]) => ({ folder, score })).sort((x, y) => y.score - x.score);
       } else {
         p.aiScores = [{ folder: AI_UNSORTED, score: 0 }];
@@ -1145,8 +1228,14 @@ async function classifyPhotos(list, onEach) {
     if (onEach) onEach();
     await new Promise((r) => setTimeout(r));   // let the page repaint between batches
   }
+  if (autoOn()) rebuildAuto(photos);
 }
 function aiFolder(p) {
+  if (autoOn()) {
+    const top = p.aiScores && p.aiScores[0];
+    if (!top || top.folder === AI_UNSORTED || top.score < Number($("aiConf").value) / 100) return AI_UNSORTED;
+    return autoFolders.get(top.folder) || AI_UNSORTED;
+  }
   const min = Number($("aiConf").value) / 100;
   const best = p.aiScores && p.aiScores[0];
   return best && best.folder !== AI_UNSORTED && best.score >= min ? best.folder : AI_UNSORTED;
@@ -1158,7 +1247,7 @@ function reviewAI(list) {
     resetResults("Check the AI's guesses");
     reviewResolve = resolve;
     addNote("Change the folder of any photo the AI got wrong. Nothing is copied until you press the button.");
-    const names = [...aiCats.map((c) => c.folder), AI_UNSORTED];
+    const names = catNames();
     const grid = el("div", "review");
     for (const p of list) {
       const card = el("div", "rcard");
@@ -1207,6 +1296,7 @@ const CAT_ICONS = {
   Vehicles: svgIcon('<path d="M3 17h18v-4.6L19 7H5l-2 5.4z"/><path d="M3 12.5h18"/><circle cx="7.5" cy="17.5" r="1.8"/><circle cx="16.5" cy="17.5" r="1.8"/>'),
   People: svgIcon('<circle cx="9" cy="8" r="3.2"/><path d="M2.8 20c0-3.4 2.8-6 6.2-6s6.2 2.6 6.2 6"/><path d="M15.5 4.9a3.1 3.1 0 0 1 0 6"/><path d="M17.5 14.3c2.2.6 3.7 2.6 3.7 5.7"/>'),
   Documents: svgIcon('<path d="M6.5 3h8l4.5 4.5V21h-12.5z"/><path d="M14.5 3v4.5H19"/><path d="M9.5 13h6M9.5 17h6"/>'),
+  Things: svgIcon('<path d="M12 3 20 7.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5 12 12l8-4.5M12 12v9"/>'),
   Unsorted: svgIcon('<circle cx="12" cy="12" r="9"/><path d="M9.4 9.4a2.7 2.7 0 1 1 3.8 2.5c-.8.4-1.2.9-1.2 1.8"/><circle cx="12" cy="17" r=".7" fill="currentColor"/>'),
 };
 const FOLDER_ICON = svgIcon('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>');
@@ -1218,6 +1308,7 @@ const CAT_INFO = {
   Vehicles:  { desc: "Cars, bikes and transport",        color: "#6ea8ff" },
   People:    { desc: "Portraits and people",             color: "#ff6fae" },
   Documents: { desc: "Screenshots, receipts and text",   color: "#8bd48b" },
+  Things:    { desc: "Gadgets, clothes and objects",    color: "#f6af60" },
   Unsorted:  { desc: "The AI was not sure about these",  color: "#aaaaaa" },
 };
 const fmtK = (n) => (n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "K" : String(n));
@@ -1229,29 +1320,77 @@ function catPhotos(name) {
   return photos.filter((p) => p.selected && isScanned(p) && catOf(p) === name);
 }
 
-function renderCats() {
-  const grid = $("catGrid");
-  if (!grid) return;
-  const names = [...aiCats.map((c) => c.folder), AI_UNSORTED];
-  const counts = new Map(names.map((n) => [n, 0]));
-  let done = 0;
-  for (const p of photos) {
+// Groups the scanned photos into the folders the AI came up with (most photos first).
+function rebuildAuto(list) {
+  const counts = new Map();
+  let total = 0;
+  for (const p of list) {
     if (!isScanned(p)) continue;
-    done++;
-    if (!p.selected) continue;
+    total++;
+    const c = p.aiScores[0].folder;
+    if (c !== AI_UNSORTED && p.aiScores[0].score >= Number($("aiConf").value) / 100) counts.set(c, (counts.get(c) || 0) + 1);
+  }
+  const minCount = Math.max(2, Math.ceil(total * 0.01));
+  const ranked = [...counts].sort((a, b) => b[1] - a[1]);
+  const map = new Map(), left = new Map();
+  let own = 0;
+  for (const [c, n] of ranked) {
+    if (n >= minCount && own < AUTO_MAX) { map.set(c, c); own++; }
+    else { const g = AUTO_GROUP_OF.get(c); left.set(g, (left.get(g) || 0) + n); }
+  }
+  for (const [c] of ranked) {
+    if (!map.has(c)) { const g = AUTO_GROUP_OF.get(c); map.set(c, (left.get(g) || 0) >= minCount ? g : AI_UNSORTED); }
+  }
+  autoFolders = map;
+}
+
+function catInfo(n) {
+  if (CAT_INFO[n]) return { ...CAT_INFO[n], icon: CAT_ICONS[n] };
+  const g = AUTO_GROUP_OF.get(n);
+  if (g) return { desc: g, color: CAT_INFO[g].color, icon: CAT_ICONS[g] };
+  return { desc: "Your own folder", color: "#f6af60", icon: FOLDER_ICON };
+}
+
+// Folder name -> number of selected photos in it. In auto mode the names come from the photos themselves.
+function catCounts() {
+  const counts = new Map();
+  if (autoOn()) rebuildAuto(photos);
+  for (const p of photos) {
+    if (!isScanned(p) || !p.selected) continue;
     const n = catOf(p);
     counts.set(n, (counts.get(n) || 0) + 1);
   }
+  return counts;
+}
+function catNames() {
+  if (!autoOn()) return [...aiCats.map((c) => c.folder), AI_UNSORTED];
+  const names = new Set();
+  for (const p of photos) if (isScanned(p)) names.add(catOf(p));
+  names.delete(AI_UNSORTED);
+  const counts = catCounts();
+  return [...names].sort((a, b) => (counts.get(b) || 0) - (counts.get(a) || 0)).concat(AI_UNSORTED);
+}
+
+function renderCats() {
+  const grid = $("catGrid");
+  if (!grid) return;
+  const counts = catCounts();
+  let done = 0;
+  for (const p of photos) if (isScanned(p)) done++;
+  let names;
+  if (!autoOn()) names = [...aiCats.map((c) => c.folder), AI_UNSORTED];
+  else if (!done) names = ["Animals", "Nature", "Places", "Food", "Vehicles", "People"];   // placeholders until the scan starts
+  else names = [...counts.keys()].filter((n) => n !== AI_UNSORTED).sort((a, b) => counts.get(b) - counts.get(a)).concat(AI_UNSORTED);
   grid.replaceChildren();
   for (const n of names) {
     const count = counts.get(n) || 0;
     if (n === AI_UNSORTED && !count) continue;
-    const info = CAT_INFO[n] || { desc: "Your own folder", color: "#f6af60" };
+    const info = catInfo(n);
     const card = el("button", "catcard");
     card.type = "button";
     card.style.setProperty("--c", info.color);
     const ci = el("span", "ci");
-    ci.innerHTML = CAT_ICONS[n] || FOLDER_ICON;
+    ci.innerHTML = info.icon;
     card.append(ci, el("span", "cn", String(count)), el("h3", null, n), el("p", "cd", info.desc),
                 el("p", "cc", `${count} photo${count === 1 ? "" : "s"}`));
     card.addEventListener("click", () => openCategory(n));
@@ -1275,7 +1414,7 @@ function openCategory(name) {
   const list = catPhotos(name);
   if (!list.length) { addNote("No photos in this category yet."); return; }
   addNote(`${list.length} photo(s). Change the folder of any photo that does not belong here.`);
-  const names = [...aiCats.map((c) => c.folder), AI_UNSORTED];
+  const names = catNames();
   const grid = el("div", "review");
   for (const p of list) {
     const card = el("div", "rcard");
@@ -1539,7 +1678,7 @@ $("photos").addEventListener("change", (e) => {
 const MODE_HINTS = {
   date: "Photos go into year / month folders, or into one folder per camera.",
   camera: "Photos go into year / month folders, or into one folder per camera.",
-  content: "The AI looks at each photo and puts it in a folder like Animals, Food or People.",
+  content: "The AI looks at each photo and names the folders by itself, like Dogs, Beaches or Food.",
 };
 $("modeHint").textContent = MODE_HINTS[checked("mode")];
 $("sort").addEventListener("change", (e) => {
@@ -1551,6 +1690,13 @@ $("sort").addEventListener("change", (e) => {
   $("modeHint").textContent = MODE_HINTS[mode];
   refreshButtons();
 });
+function syncAuto() {
+  const auto = autoOn();
+  $("aiManual").hidden = auto;
+  renderCats();
+  if (checked("mode") === "content" && photos.length && !working) busy(autoCategorize);
+}
+$("aiAuto").addEventListener("change", syncAuto);
 $("aiAdd").addEventListener("click", addAiCat);
 $("aiNew").addEventListener("keydown", (e) => { if (e.key === "Enter") addAiCat(); });
 $("aiReset").addEventListener("click", () => { aiCats = AI_DEFAULTS.map((c) => ({ folder: c.folder, prompts: [...c.prompts] })); renderAiChips(); });
@@ -1561,6 +1707,7 @@ $("aiConf").addEventListener("input", () => {
 });
 $("catSave").addEventListener("click", () => busy(organize));
 renderAiChips();
+if (navigator.gpu) $("aiModel").value = "better";   // a GPU makes the more accurate model fast enough
 renderCats();
 $("selAll").addEventListener("click", () => setAll(true));
 $("selNone").addEventListener("click", () => setAll(false));
