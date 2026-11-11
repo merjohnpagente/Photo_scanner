@@ -380,7 +380,7 @@ tr:last-child td { border-bottom: 0; }
 .catcard { --c: #aaaaaa; position: relative; display: flex; flex-direction: column; justify-content: flex-end; min-height: 190px; padding: 16px; text-align: left; border: 1px solid color-mix(in srgb, var(--c) 30%, transparent); border-radius: 24px; background: color-mix(in srgb, var(--c) 13%, #0b0b0b); color: #fff; cursor: pointer; transition: transform 0.25s var(--spring); }
 .catcard:hover { transform: translateY(-3px); }
 .catcard:active { transform: scale(0.97); }
-.catcard .ci { position: absolute; top: 14px; left: 14px; display: grid; place-items: center; width: 48px; height: 48px; border-radius: 16px; background: rgba(255, 255, 255, 0.1); font-size: 1.5rem; }
+.catcard .ci { position: absolute; top: 14px; left: 14px; display: grid; place-items: center; width: 48px; height: 48px; border-radius: 16px; background: rgba(255, 255, 255, 0.1); color: var(--c); }
 .catcard .cn { position: absolute; top: 18px; right: 14px; min-width: 38px; padding: 5px 10px; border-radius: 99px; background: rgba(255, 255, 255, 0.1); color: var(--c); font-weight: 600; text-align: center; font-size: 0.9rem; }
 .catcard h3 { font-size: 1.15rem; font-weight: 600; }
 .catcard .cd { margin-top: 2px; color: var(--muted); font-size: 0.85rem; line-height: 1.3; }
@@ -998,8 +998,8 @@ function addAiCat() {
   renderCats();
 }
 
-async function loadClassifier(key) {
-  if (classifiers[key]) return classifiers[key];
+async function loadClassifier(key, noGpu) {
+  if (classifiers[key] && !noGpu) return classifiers[key];
   let lib;
   try { lib = await import(AI_LIB); }
   catch (_) { throw new Error("Could not load the AI library. Check your internet connection and try again."); }
@@ -1012,17 +1012,28 @@ async function loadClassifier(key) {
       progress.set(d.progress / 100);
     }
   };
-  let eng;
+  let eng = null;
   try {
     // Fast path: the text of the folders is embedded ONCE, then every photo only needs the image half.
     const tokenizer = await lib.AutoTokenizer.from_pretrained(id);
     const processor = await lib.AutoProcessor.from_pretrained(id);
-    const textModel = await lib.CLIPTextModelWithProjection.from_pretrained(id, { progress_callback: cb });
-    const visionModel = await lib.CLIPVisionModelWithProjection.from_pretrained(id, { progress_callback: cb });
-    eng = { lib, fast: true, tokenizer, processor, textModel, visionModel, labelSig: "", labelVecs: null };
+    // Try the phone's GPU first (WebGPU), then the quantized (smaller, faster) CPU model, then the plain CPU model.
+    const attempts = [];
+    if (!noGpu && navigator.gpu) attempts.push({ device: "webgpu", dtype: "fp32" });
+    attempts.push({ device: "wasm", dtype: "q8" }, { device: "wasm" });
+    for (const a of attempts) {
+      try {
+        const o = { progress_callback: cb, ...a };
+        const textModel = await lib.CLIPTextModelWithProjection.from_pretrained(id, o);
+        const visionModel = await lib.CLIPVisionModelWithProjection.from_pretrained(id, o);
+        eng = { lib, fast: true, device: a.device, tokenizer, processor, textModel, visionModel, labelSig: "", labelVecs: null };
+        break;
+      } catch (_) { /* try the next way */ }
+    }
+    if (!eng) throw new Error("no fast model");
   } catch (_) {
     const pipe = await lib.pipeline("zero-shot-image-classification", id, { progress_callback: cb });
-    eng = { lib, fast: false, pipe };
+    eng = { lib, fast: false, device: "wasm", pipe };
   }
   classifiers[key] = eng;
   return eng;
@@ -1057,46 +1068,82 @@ async function smallImage(eng, p) {
   }
 }
 
-async function scoreImage(eng, img, labels) {
-  const { image_embeds } = await eng.visionModel(await eng.processor(img));
-  const v = unitVec(image_embeds.data);
-  const logits = eng.labelVecs.map((t) => 100 * t.reduce((sum, x, i) => sum + x * v[i], 0));
-  const m = Math.max(...logits);
-  const ex = logits.map((x) => Math.exp(x - m));
-  const total = ex.reduce((x, y) => x + y, 0);
-  return labels.map((label, i) => ({ label, score: ex[i] / total }));
+// Scores several photos in ONE model call (much faster than one call per photo).
+async function scoreImages(eng, imgs, labels) {
+  const { image_embeds } = await eng.visionModel(await eng.processor(imgs));
+  const d = image_embeds.dims[image_embeds.dims.length - 1], data = image_embeds.data;
+  return imgs.map((_, b) => {
+    const v = unitVec(data.subarray(b * d, (b + 1) * d));
+    const logits = eng.labelVecs.map((t) => 100 * t.reduce((sum, x, i) => sum + x * v[i], 0));
+    const m = Math.max(...logits);
+    const ex = logits.map((x) => Math.exp(x - m));
+    const total = ex.reduce((x, y) => x + y, 0);
+    return labels.map((label, i) => ({ label, score: ex[i] / total }));
+  });
+}
+
+// Returns one result per photo (or null when the photo can't be read, e.g. TIFF).
+async function runBatch(eng, chunk, labels) {
+  const res = chunk.map(() => null);
+  if (!eng.fast) {
+    for (let i = 0; i < chunk.length; i++) {
+      try { res[i] = await eng.pipe(chunk[i].url, labels, { hypothesis_template: "a photo of {}" }); } catch (_) {}
+    }
+    return res;
+  }
+  const imgs = await Promise.all(chunk.map((p) => smallImage(eng, p).catch(() => null)));
+  const ok = [];
+  imgs.forEach((im, i) => { if (im) ok.push(i); });
+  if (ok.length) {
+    const outs = await scoreImages(eng, ok.map((i) => imgs[i]), labels);
+    ok.forEach((i, k) => { res[i] = outs[k]; });
+  }
+  return res;
 }
 
 // Gives every photo p.aiScores = [{ folder, score }] sorted from best to worst (scores add up to 1).
 async function classifyPhotos(list, onEach) {
   if (!aiCats.length) throw new Error("Add at least one folder for the AI to use.");
   const key = $("aiModel").value;
-  const eng = await loadClassifier(key);
+  let eng = await loadClassifier(key);
   const owner = new Map();
   for (const c of aiCats) for (const t of c.prompts) if (!owner.has(t)) owner.set(t, c.folder);
   for (const t of AI_OTHER) if (!owner.has(t)) owner.set(t, AI_UNSORTED);
   const labels = [...owner.keys()];
   const sig = key + "|" + labels.join("|");
-  if (eng.fast && eng.labelSig !== sig) { eng.labelVecs = await embedLabels(eng, labels); eng.labelSig = sig; }
-  for (let i = 0; i < list.length; i++) {
-    const p = list[i];
-    if (p.aiSig === sig) continue;   // already scanned with these folders
-    setStatus(`Scanning ${i + 1} of ${list.length}: ${p.name}`);
-    progress.set(i / list.length);
-    p.aiChoice = null; p.aiManual = false;
-    try {
-      const out = eng.fast
-        ? await scoreImage(eng, await smallImage(eng, p), labels)
-        : await eng.pipe(p.url, labels, { hypothesis_template: "a photo of {}" });
-      const sum = new Map();
-      for (const o of out) sum.set(owner.get(o.label), (sum.get(owner.get(o.label)) || 0) + o.score);
-      p.aiScores = [...sum.entries()].map(([folder, score]) => ({ folder, score })).sort((x, y) => y.score - x.score);
-    } catch (_) {            // e.g. TIFF can't be decoded by browsers
-      p.aiScores = [{ folder: AI_UNSORTED, score: 0 }];
+  const prepare = async () => {
+    if (eng.fast && eng.labelSig !== sig) { eng.labelVecs = await embedLabels(eng, labels); eng.labelSig = sig; }
+  };
+  await prepare();
+  const todo = list.filter((p) => p.aiSig !== sig);   // photos already scanned with these folders are skipped
+  const already = list.length - todo.length;
+  const BATCH = eng.fast ? (eng.device === "webgpu" ? 16 : 8) : 1;
+  for (let i = 0; i < todo.length; i += BATCH) {
+    const chunk = todo.slice(i, i + BATCH);
+    setStatus(`Scanning ${already + i + 1} of ${list.length}...`);
+    progress.set((already + i) / list.length);
+    let outs;
+    try { outs = await runBatch(eng, chunk, labels); }
+    catch (_) {
+      outs = chunk.map(() => null);
+      if (eng.device === "webgpu") {   // the GPU failed: switch to the CPU and try this batch again
+        try { eng = await loadClassifier(key, true); await prepare(); outs = await runBatch(eng, chunk, labels); } catch (_) {}
+      }
     }
-    p.aiSig = sig;
+    chunk.forEach((p, k) => {
+      p.aiChoice = null; p.aiManual = false;
+      const out = outs[k];
+      if (out) {
+        const sum = new Map();
+        for (const o of out) sum.set(owner.get(o.label), (sum.get(owner.get(o.label)) || 0) + o.score);
+        p.aiScores = [...sum.entries()].map(([folder, score]) => ({ folder, score })).sort((x, y) => y.score - x.score);
+      } else {
+        p.aiScores = [{ folder: AI_UNSORTED, score: 0 }];
+      }
+      p.aiSig = sig;
+    });
     if (onEach) onEach();
-    await new Promise((r) => setTimeout(r));   // let the page repaint between photos
+    await new Promise((r) => setTimeout(r));   // let the page repaint between batches
   }
 }
 function aiFolder(p) {
@@ -1150,15 +1197,28 @@ function reviewAI(list) {
 // ---------------------------------------------------------- CATEGORIES ----
 // Cards like Animals / Nature / Places ... with a live count. The AI fills them in
 // automatically right after a folder is chosen; "save as folders" copies each category into its own folder.
+const svgIcon = (inner) =>
+  `<svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${inner}</svg>`;
+const CAT_ICONS = {
+  Animals: svgIcon('<g fill="currentColor" stroke="none"><ellipse cx="4.8" cy="11" rx="1.9" ry="2.4"/><ellipse cx="9" cy="6.2" rx="1.9" ry="2.5"/><ellipse cx="15" cy="6.2" rx="1.9" ry="2.5"/><ellipse cx="19.2" cy="11" rx="1.9" ry="2.4"/><path d="M12 11.5c-3.2 0-5.8 3.2-5.8 5.4 0 1.9 1.6 2.6 3.2 2.6 1 0 1.6-.5 2.6-.5s1.6.5 2.6.5c1.6 0 3.2-.7 3.2-2.6 0-2.2-2.6-5.4-5.8-5.4z"/></g>'),
+  Nature: svgIcon('<path d="M2.5 19.5 9 8l4 6.5 2.5-4 6 9z"/><path d="M7.2 11.2 9 14l1.8-2.8"/>'),
+  Places: svgIcon('<path d="M12 21.5s-6.5-5.7-6.5-11.2a6.5 6.5 0 0 1 13 0c0 5.5-6.5 11.2-6.5 11.2z"/><circle cx="12" cy="10.2" r="2.4"/>'),
+  Food: svgIcon('<path d="M6 3v6.5a2.5 2.5 0 0 0 5 0V3M8.5 3v18"/><path d="M17.5 21V3c-2.2 1.2-3.5 4-3.5 7.2 0 2.4 1.3 3.8 3.5 3.8"/>'),
+  Vehicles: svgIcon('<path d="M3 17h18v-4.6L19 7H5l-2 5.4z"/><path d="M3 12.5h18"/><circle cx="7.5" cy="17.5" r="1.8"/><circle cx="16.5" cy="17.5" r="1.8"/>'),
+  People: svgIcon('<circle cx="9" cy="8" r="3.2"/><path d="M2.8 20c0-3.4 2.8-6 6.2-6s6.2 2.6 6.2 6"/><path d="M15.5 4.9a3.1 3.1 0 0 1 0 6"/><path d="M17.5 14.3c2.2.6 3.7 2.6 3.7 5.7"/>'),
+  Documents: svgIcon('<path d="M6.5 3h8l4.5 4.5V21h-12.5z"/><path d="M14.5 3v4.5H19"/><path d="M9.5 13h6M9.5 17h6"/>'),
+  Unsorted: svgIcon('<circle cx="12" cy="12" r="9"/><path d="M9.4 9.4a2.7 2.7 0 1 1 3.8 2.5c-.8.4-1.2.9-1.2 1.8"/><circle cx="12" cy="17" r=".7" fill="currentColor"/>'),
+};
+const FOLDER_ICON = svgIcon('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>');
 const CAT_INFO = {
-  Animals:   { desc: "Pets, wildlife and birds",         icon: "\uD83D\uDC3E", color: "#f5b94a" },
-  Nature:    { desc: "Landscapes and outdoors",          icon: "\u26F0\uFE0F", color: "#5cc8e6" },
-  Places:    { desc: "Beaches, buildings and landmarks", icon: "\uD83D\uDCCD", color: "#9b8cff" },
-  Food:      { desc: "Meals, fruit and drinks",          icon: "\uD83C\uDF74", color: "#ff7a62" },
-  Vehicles:  { desc: "Cars, bikes and transport",        icon: "\uD83D\uDE97", color: "#6ea8ff" },
-  People:    { desc: "Portraits and people",             icon: "\uD83D\uDC65", color: "#ff6fae" },
-  Documents: { desc: "Screenshots, receipts and text",   icon: "\uD83D\uDCC4", color: "#8bd48b" },
-  Unsorted:  { desc: "The AI was not sure about these",  icon: "\u2754",       color: "#aaaaaa" },
+  Animals:   { desc: "Pets, wildlife and birds",         color: "#f5b94a" },
+  Nature:    { desc: "Landscapes and outdoors",          color: "#5cc8e6" },
+  Places:    { desc: "Beaches, buildings and landmarks", color: "#9b8cff" },
+  Food:      { desc: "Meals, fruit and drinks",          color: "#ff7a62" },
+  Vehicles:  { desc: "Cars, bikes and transport",        color: "#6ea8ff" },
+  People:    { desc: "Portraits and people",             color: "#ff6fae" },
+  Documents: { desc: "Screenshots, receipts and text",   color: "#8bd48b" },
+  Unsorted:  { desc: "The AI was not sure about these",  color: "#aaaaaa" },
 };
 const fmtK = (n) => (n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "K" : String(n));
 const catOf = (p) => p.aiChoice || aiFolder(p);
@@ -1186,11 +1246,13 @@ function renderCats() {
   for (const n of names) {
     const count = counts.get(n) || 0;
     if (n === AI_UNSORTED && !count) continue;
-    const info = CAT_INFO[n] || { desc: "Your own folder", icon: "\uD83D\uDCC1", color: "#f6af60" };
+    const info = CAT_INFO[n] || { desc: "Your own folder", color: "#f6af60" };
     const card = el("button", "catcard");
     card.type = "button";
     card.style.setProperty("--c", info.color);
-    card.append(el("span", "ci", info.icon), el("span", "cn", String(count)), el("h3", null, n), el("p", "cd", info.desc),
+    const ci = el("span", "ci");
+    ci.innerHTML = CAT_ICONS[n] || FOLDER_ICON;
+    card.append(ci, el("span", "cn", String(count)), el("h3", null, n), el("p", "cd", info.desc),
                 el("p", "cc", `${count} photo${count === 1 ? "" : "s"}`));
     card.addEventListener("click", () => openCategory(n));
     grid.append(card);
@@ -1209,8 +1271,7 @@ function renderCats() {
 
 // Shows the photos of one category; the select under each photo moves it to another category.
 function openCategory(name) {
-  const info = CAT_INFO[name] || { icon: "\uD83D\uDCC1" };
-  resetResults(`${info.icon} ${name}`);
+  resetResults(name);
   const list = catPhotos(name);
   if (!list.length) { addNote("No photos in this category yet."); return; }
   addNote(`${list.length} photo(s). Change the folder of any photo that does not belong here.`);
