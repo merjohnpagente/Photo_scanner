@@ -1089,17 +1089,25 @@ async function loadClassifier(key, noGpu) {
     const processor = await withTimeout(lib.AutoProcessor.from_pretrained(id), 120000, "Loading the image processor");
     // Try the phone's GPU first (WebGPU), then the quantized (smaller, faster) CPU model, then the plain CPU model.
     const attempts = [];
-    if (!noGpu && !IS_MOBILE && navigator.gpu) attempts.push({ device: "webgpu", dtype: "fp32" });
-    attempts.push({ device: "wasm", dtype: "q8" }, { device: "wasm" });
+    // Desktop GPU: both models on WebGPU (fp32). Phone GPU: only the image half (the slow part) on WebGPU in
+    // the smaller fp16 format; the folder text runs once on the CPU. If the GPU ever fails, it is remembered.
+    const gpuBad = (() => { try { return localStorage.getItem("po_gpu_bad") === "1"; } catch (_) { return false; } })();
+    const cpu = { device: "wasm", dtype: "q8" };
+    if (!noGpu && !gpuBad && navigator.gpu) {
+      if (IS_MOBILE) attempts.push({ text: cpu, vision: { device: "webgpu", dtype: "fp16" }, gpu: true });
+      else attempts.push({ text: { device: "webgpu", dtype: "fp32" }, vision: { device: "webgpu", dtype: "fp32" }, gpu: true });
+    }
+    attempts.push({ text: cpu, vision: cpu }, { text: { device: "wasm" }, vision: { device: "wasm" } });
     for (const a of attempts) {
       try {
-        const o = { progress_callback: cb, ...a };
-        const ms = a.device === "webgpu" ? 60000 : 240000;   // a hung GPU start falls back to the CPU
-        const textModel = await withTimeout(lib.CLIPTextModelWithProjection.from_pretrained(id, o), ms, "Starting the text model");
-        const visionModel = await withTimeout(lib.CLIPVisionModelWithProjection.from_pretrained(id, o), ms, "Starting the image model");
-        eng = { lib, fast: true, device: a.device, tokenizer, processor, textModel, visionModel, labelSig: "", labelVecs: null };
+        const ms = a.gpu ? 60000 : 240000;   // a hung GPU start falls back to the CPU
+        const textModel = await withTimeout(lib.CLIPTextModelWithProjection.from_pretrained(id, { progress_callback: cb, ...a.text }), ms, "Starting the text model");
+        const visionModel = await withTimeout(lib.CLIPVisionModelWithProjection.from_pretrained(id, { progress_callback: cb, ...a.vision }), ms, "Starting the image model");
+        eng = { lib, fast: true, device: a.vision.device, tokenizer, processor, textModel, visionModel, labelSig: "", labelVecs: null };
         break;
-      } catch (_) { /* try the next way */ }
+      } catch (_) {
+        if (a.gpu) { try { localStorage.setItem("po_gpu_bad", "1"); } catch (_) {} }   // do not try the GPU again next time
+      }
     }
     if (!eng) throw new Error("no fast model");
   } catch (_) {
@@ -1214,7 +1222,7 @@ async function classifyPhotos(list, onEach) {
   await prepare();
   const todo = list.filter((p) => p.aiSig !== sig);   // photos already scanned with these folders are skipped
   const already = list.length - todo.length;
-  const BATCH = eng.fast ? (eng.device === "webgpu" ? 16 : 8) : 1;
+  const BATCH = eng.fast ? (eng.device === "webgpu" && !IS_MOBILE ? 16 : 8) : 1;
   for (let i = 0; i < todo.length; i += BATCH) {
     const chunk = todo.slice(i, i + BATCH);
     setStatus(`Scanning ${already + i + 1} of ${list.length}...`);
@@ -1224,6 +1232,7 @@ async function classifyPhotos(list, onEach) {
     catch (_) {
       outs = chunk.map(() => null);
       if (eng.device === "webgpu") {   // the GPU failed: switch to the CPU and try this batch again
+        try { localStorage.setItem("po_gpu_bad", "1"); } catch (_) {}
         try { eng = await loadClassifier(key, true); await prepare(); outs = await runBatch(eng, chunk, names()); } catch (_) {}
       }
     }
