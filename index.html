@@ -368,6 +368,25 @@ tr:last-child td { border-bottom: 0; }
 .rguess { margin: 2px 0 6px; color: var(--muted); font-size: 0.76rem; }
 .rcard select { width: 100%; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--soft); color: #fff; font: inherit; font-size: 0.85rem; }
 .ractions { position: sticky; bottom: 0; display: flex; gap: 12px; align-items: center; padding: 14px 0; background: linear-gradient(0deg, #0b0b0b 70%, transparent); }
+
+/* ------------------------------------------------------------ categories */
+.catprog { max-width: 640px; margin: 4px 0 22px; padding: 18px 20px; border: 1px solid rgba(92, 214, 160, 0.35); border-radius: 22px; background: linear-gradient(135deg, rgba(92, 214, 160, 0.12), rgba(255, 255, 255, 0.02)); }
+.catprog-top { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-weight: 600; }
+.catprog-top b { color: #5cd6a0; font-weight: 600; }
+.catbar { height: 8px; margin: 12px 0 10px; border-radius: 99px; background: rgba(255, 255, 255, 0.12); overflow: hidden; }
+.catbar i { display: block; height: 100%; width: 0; border-radius: 99px; background: #5cd6a0; transition: width 0.3s var(--ease); }
+.catprog .hint { margin: 0; max-width: none; }
+.catgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; max-width: 640px; }
+.catcard { --c: #aaaaaa; position: relative; display: flex; flex-direction: column; justify-content: flex-end; min-height: 190px; padding: 16px; text-align: left; border: 1px solid color-mix(in srgb, var(--c) 30%, transparent); border-radius: 24px; background: color-mix(in srgb, var(--c) 13%, #0b0b0b); color: #fff; cursor: pointer; transition: transform 0.25s var(--spring); }
+.catcard:hover { transform: translateY(-3px); }
+.catcard:active { transform: scale(0.97); }
+.catcard .ci { position: absolute; top: 14px; left: 14px; display: grid; place-items: center; width: 48px; height: 48px; border-radius: 16px; background: rgba(255, 255, 255, 0.1); font-size: 1.5rem; }
+.catcard .cn { position: absolute; top: 18px; right: 14px; min-width: 38px; padding: 5px 10px; border-radius: 99px; background: rgba(255, 255, 255, 0.1); color: var(--c); font-weight: 600; text-align: center; font-size: 0.9rem; }
+.catcard h3 { font-size: 1.15rem; font-weight: 600; }
+.catcard .cd { margin-top: 2px; color: var(--muted); font-size: 0.85rem; line-height: 1.3; }
+.catcard .cc { margin-top: 8px; color: var(--c); font-weight: 600; font-size: 0.92rem; }
+.catactions { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; max-width: 640px; margin-top: 24px; }
+.catactions .hint { margin: 0; flex: 1 1 220px; }
 </style>
 </head>
 <body>
@@ -403,12 +422,12 @@ tr:last-child td { border-bottom: 0; }
   <p class="label rise">01 — sort into</p>
   <fieldset class="mode rise">
     <legend class="sr">Sort photos</legend>
-    <label><input type="radio" name="mode" value="date" checked><span class="t">date</span></label>
+    <label><input type="radio" name="mode" value="date"><span class="t">date</span></label>
     <label><input type="radio" name="mode" value="camera"><span class="t">camera</span></label>
-    <label><input type="radio" name="mode" value="content"><span class="t">content (AI)</span></label>
+    <label><input type="radio" name="mode" value="content" checked><span class="t">content (AI)</span></label>
   </fieldset>
-  <p id="modeHint" class="hint rise">Photos go into year / month folders, or into one folder per camera.</p>
-  <div id="aiBox" class="aibox" hidden>
+  <p id="modeHint" class="hint rise">The AI looks at each photo and puts it in a folder like Animals, Food or People.</p>
+  <div id="aiBox" class="aibox">
     <p class="aihead">folders for the AI to use</p>
     <div id="aiChips" class="aichips"></div>
     <div class="airow">
@@ -422,11 +441,25 @@ tr:last-child td { border-bottom: 0; }
         <option value="fast">faster (less accurate)</option>
       </select>
     </label>
-    <label class="aicheck"><input type="checkbox" id="aiReview" checked> check the AI's guesses before copying</label>
+    <label class="aicheck"><input type="checkbox" id="aiReview"> check the AI's guesses before copying</label>
     <label class="airange">minimum match
       <input id="aiConf" type="range" min="0" max="90" step="5" value="30"><b id="aiConfVal">30%</b>
     </label>
     <p class="hint">The AI runs on your device. The first time it downloads a model (needs internet), then it is cached. Photos it is not sure about go into "Unsorted". You can fix any wrong guess before copying.</p>
+  </div>
+</section>
+
+<section class="block" id="cats">
+  <p class="label rise">categories</p>
+  <div class="catprog" id="catProg">
+    <div class="catprog-top"><span>Sorted on your device</span><b id="catProgNum">0/0</b></div>
+    <div class="catbar"><i id="catBarFill"></i></div>
+    <p id="catProgText" class="hint">Choose a photo folder. The photos are sorted into categories automatically.</p>
+  </div>
+  <div id="catGrid" class="catgrid"></div>
+  <div class="catactions">
+    <button id="catSave" type="button" class="orb" disabled><span class="roll"><span data-t="save as folders">save as folders</span></span></button>
+    <p class="hint">Tap a category to see its photos or move a wrong one. Saving makes one folder per category.</p>
   </div>
 </section>
 
@@ -592,6 +625,7 @@ function refreshButtons() {
   $("selNone").disabled = working || !photos.length;
   $("organize").disabled = working || !anySelected;
   $("dupes").disabled = working || !anySelected;
+  if ($("catSave")) $("catSave").disabled = working || !photos.some((p) => p.selected && isScanned(p));
   document.body.classList.toggle("working", working);
   document.querySelectorAll("#menu [data-act]").forEach((b) => {
     const a = b.dataset.act;
@@ -778,6 +812,7 @@ function updateCount() {
   if ($("count").textContent !== text) { $("count").textContent = text; bump($("count")); }
   if ($("selNum").textContent !== String(sel)) { $("selNum").textContent = sel; bump($("selNumWrap")); }
   refreshButtons();
+  renderCats();
 }
 
 function renderSkeleton(n) {
@@ -927,12 +962,12 @@ const AI_UNSORTED = "Unsorted";
 // Prompts that mean "none of the folders": if they win, the photo goes to Unsorted.
 const AI_OTHER = ["a close-up of an object", "an abstract pattern or texture", "a very blurry or dark picture"];
 const AI_DEFAULTS = [
-  { folder: "People",    prompts: ["a person", "a group of people", "a selfie", "a portrait of a face", "a family", "a crowd of people"] },
   { folder: "Animals",   prompts: ["a dog", "a cat", "a bird", "an animal", "wildlife", "a pet", "a farm animal", "a fish"] },
+  { folder: "Nature",    prompts: ["a landscape", "mountains", "a forest", "flowers", "the sky and clouds", "a sunset", "a waterfall", "a rice field"] },
+  { folder: "Places",    prompts: ["a building", "a house", "a city street", "a church", "a bridge", "a beach", "the sea", "a tourist landmark"] },
   { folder: "Food",      prompts: ["food", "a meal on a plate", "a drink", "a dessert", "fruit", "a dish in a restaurant"] },
-  { folder: "Nature",    prompts: ["a landscape", "mountains", "the sea or a beach", "a forest", "flowers", "the sky and clouds", "a sunset"] },
   { folder: "Vehicles",  prompts: ["a car", "a motorcycle", "a boat", "a bus", "a truck", "an airplane", "a bicycle"] },
-  { folder: "Buildings", prompts: ["a building", "a house", "a city street", "a church", "a bridge"] },
+  { folder: "People",    prompts: ["a person", "a group of people", "a selfie", "a portrait of a face", "a family", "a crowd of people"] },
   { folder: "Documents", prompts: ["a screenshot of a phone or computer", "a document with text", "a receipt", "a page of a book", "a poster with text"] },
 ];
 let aiCats = AI_DEFAULTS.map((c) => ({ folder: c.folder, prompts: [...c.prompts] }));
@@ -947,7 +982,7 @@ function renderAiChips() {
     const x = el("button", null, "\u00d7");
     x.type = "button";
     x.setAttribute("aria-label", "Remove " + c.folder);
-    x.addEventListener("click", () => { aiCats.splice(i, 1); renderAiChips(); });
+    x.addEventListener("click", () => { aiCats.splice(i, 1); renderAiChips(); renderCats(); });
     chip.append(x);
     box.append(chip);
   });
@@ -960,6 +995,7 @@ function addAiCat() {
   }
   $("aiNew").value = "";
   renderAiChips();
+  renderCats();
 }
 
 async function loadClassifier(key) {
@@ -981,7 +1017,7 @@ async function loadClassifier(key) {
 }
 
 // Gives every photo p.aiScores = [{ folder, score }] sorted from best to worst (scores add up to 1).
-async function classifyPhotos(list) {
+async function classifyPhotos(list, onEach) {
   if (!aiCats.length) throw new Error("Add at least one folder for the AI to use.");
   const key = $("aiModel").value;
   const clf = await loadClassifier(key);
@@ -995,7 +1031,7 @@ async function classifyPhotos(list) {
     if (p.aiSig === sig) continue;   // already scanned with these folders
     setStatus(`Scanning ${i + 1} of ${list.length}: ${p.name}`);
     progress.set(i / list.length);
-    p.aiChoice = null;
+    p.aiChoice = null; p.aiManual = false;
     try {
       const out = await clf(p.url, labels, { hypothesis_template: "a photo of {}" });
       const sum = new Map();
@@ -1005,6 +1041,8 @@ async function classifyPhotos(list) {
       p.aiScores = [{ folder: AI_UNSORTED, score: 0 }];
     }
     p.aiSig = sig;
+    if (onEach) onEach();
+    await new Promise((r) => setTimeout(r));   // let the page repaint between photos
   }
 }
 function aiFolder(p) {
@@ -1030,14 +1068,14 @@ function reviewAI(list) {
       const guess = el("div", "rguess", (p.aiScores || []).slice(0, 3).map((g) => `${g.folder} ${Math.round(g.score * 100)}%`).join(" \u00b7 "));
       const sel = document.createElement("select");
       sel.setAttribute("aria-label", "Folder for " + p.name);
-      p.aiChoice = aiFolder(p);
+      if (!p.aiManual) p.aiChoice = aiFolder(p);
       for (const n of names) {
         const o = document.createElement("option");
         o.value = o.textContent = n;
         if (n === p.aiChoice) o.selected = true;
         sel.append(o);
       }
-      sel.addEventListener("change", () => { p.aiChoice = sel.value; });
+      sel.addEventListener("change", () => { p.aiChoice = sel.value; p.aiManual = true; renderCats(); });
       card.append(img, nm, guess, sel);
       grid.append(card);
     }
@@ -1052,6 +1090,112 @@ function reviewAI(list) {
     actions.append(go, cancel);
     $("results").append(grid, actions);
   });
+}
+
+
+// ---------------------------------------------------------- CATEGORIES ----
+// Cards like Animals / Nature / Places ... with a live count. The AI fills them in
+// automatically right after a folder is chosen; "save as folders" copies each category into its own folder.
+const CAT_INFO = {
+  Animals:   { desc: "Pets, wildlife and birds",         icon: "\uD83D\uDC3E", color: "#f5b94a" },
+  Nature:    { desc: "Landscapes and outdoors",          icon: "\u26F0\uFE0F", color: "#5cc8e6" },
+  Places:    { desc: "Beaches, buildings and landmarks", icon: "\uD83D\uDCCD", color: "#9b8cff" },
+  Food:      { desc: "Meals, fruit and drinks",          icon: "\uD83C\uDF74", color: "#ff7a62" },
+  Vehicles:  { desc: "Cars, bikes and transport",        icon: "\uD83D\uDE97", color: "#6ea8ff" },
+  People:    { desc: "Portraits and people",             icon: "\uD83D\uDC65", color: "#ff6fae" },
+  Documents: { desc: "Screenshots, receipts and text",   icon: "\uD83D\uDCC4", color: "#8bd48b" },
+  Unsorted:  { desc: "The AI was not sure about these",  icon: "\u2754",       color: "#aaaaaa" },
+};
+const fmtK = (n) => (n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "K" : String(n));
+const catOf = (p) => p.aiChoice || aiFolder(p);
+const isScanned = (p) => Array.isArray(p.aiScores) && p.aiScores.length > 0;
+let scanning = false;
+
+function catPhotos(name) {
+  return photos.filter((p) => p.selected && isScanned(p) && catOf(p) === name);
+}
+
+function renderCats() {
+  const grid = $("catGrid");
+  if (!grid) return;
+  const names = [...aiCats.map((c) => c.folder), AI_UNSORTED];
+  const counts = new Map(names.map((n) => [n, 0]));
+  let done = 0;
+  for (const p of photos) {
+    if (!isScanned(p)) continue;
+    done++;
+    if (!p.selected) continue;
+    const n = catOf(p);
+    counts.set(n, (counts.get(n) || 0) + 1);
+  }
+  grid.replaceChildren();
+  for (const n of names) {
+    const count = counts.get(n) || 0;
+    if (n === AI_UNSORTED && !count) continue;
+    const info = CAT_INFO[n] || { desc: "Your own folder", icon: "\uD83D\uDCC1", color: "#f6af60" };
+    const card = el("button", "catcard");
+    card.type = "button";
+    card.style.setProperty("--c", info.color);
+    card.append(el("span", "ci", info.icon), el("span", "cn", String(count)), el("h3", null, n), el("p", "cd", info.desc),
+                el("p", "cc", `${count} photo${count === 1 ? "" : "s"}`));
+    card.addEventListener("click", () => openCategory(n));
+    grid.append(card);
+  }
+  const total = photos.length;
+  $("catProgNum").textContent = `${fmtK(done)}/${fmtK(total)}`;
+  $("catBarFill").style.width = total ? Math.round((done / total) * 100) + "%" : "0%";
+  $("catProgText").textContent = !total
+    ? "Choose a photo folder. The photos are sorted into categories automatically."
+    : done < total
+      ? (scanning ? `${fmtK(total - done)} photos are waiting to be organized. This happens privately on your device.`
+                  : `${fmtK(total - done)} photos are not sorted yet.`)
+      : "All photos are sorted. Tap a category to check it, then press save as folders.";
+  $("catSave").disabled = working || !done;
+}
+
+// Shows the photos of one category; the select under each photo moves it to another category.
+function openCategory(name) {
+  const info = CAT_INFO[name] || { icon: "\uD83D\uDCC1" };
+  resetResults(`${info.icon} ${name}`);
+  const list = catPhotos(name);
+  if (!list.length) { addNote("No photos in this category yet."); return; }
+  addNote(`${list.length} photo(s). Change the folder of any photo that does not belong here.`);
+  const names = [...aiCats.map((c) => c.folder), AI_UNSORTED];
+  const grid = el("div", "review");
+  for (const p of list) {
+    const card = el("div", "rcard");
+    const img = document.createElement("img");
+    img.loading = "lazy"; img.alt = p.name; img.src = p.url;
+    const nm = el("div", "rname", p.name);
+    nm.title = p.path;
+    const guess = el("div", "rguess", (p.aiScores || []).slice(0, 3).map((g) => `${g.folder} ${Math.round(g.score * 100)}%`).join(" \u00b7 "));
+    const sel = document.createElement("select");
+    sel.setAttribute("aria-label", "Folder for " + p.name);
+    for (const n of names) {
+      const o = document.createElement("option");
+      o.value = o.textContent = n;
+      if (n === name) o.selected = true;
+      sel.append(o);
+    }
+    sel.addEventListener("change", () => {
+      p.aiChoice = sel.value; p.aiManual = true;
+      card.remove();
+      renderCats();
+    });
+    card.append(img, nm, guess, sel);
+    grid.append(card);
+  }
+  $("results").append(grid);
+}
+
+// Runs automatically after a folder is chosen (content mode only).
+async function autoCategorize() {
+  if (checked("mode") !== "content" || !photos.length) { renderCats(); return; }
+  scanning = true;
+  renderCats();
+  try { await classifyPhotos(photos, renderCats); }
+  finally { scanning = false; renderCats(); }
+  if (photos.every(isScanned)) setStatus(`Sorted ${photos.length} photo(s) into categories. Tap a category to check it, then save as folders.`);
 }
 
 async function loadJSZip() {
@@ -1252,6 +1396,7 @@ async function pickSource() {
       const found = [];
       await walk(handle, "", found);
       await loadPhotos(found);
+      await autoCategorize();
     });
     return;
   }
@@ -1265,7 +1410,7 @@ async function pickSource() {
       .filter((e) => IMAGE_EXTENSIONS.has(extOf(e.name)) && !e.path.startsWith(SORTED_FOLDER + "/"));
     source = { name: "(selected folder)" };
     $("sourceName").textContent = `${found.length} photo(s) selected`;
-    busy(() => loadPhotos(found));
+    busy(async () => { await loadPhotos(found); await autoCategorize(); });
   };
   input.click();
 }
@@ -1281,18 +1426,27 @@ const MODE_HINTS = {
   camera: "Photos go into year / month folders, or into one folder per camera.",
   content: "The AI looks at each photo and puts it in a folder like Animals, Food or People.",
 };
+$("modeHint").textContent = MODE_HINTS[checked("mode")];
 $("sort").addEventListener("change", (e) => {
   if (e.target.name !== "mode") return;
   const mode = checked("mode");
   $("aiBox").hidden = mode !== "content";
+  $("cats").hidden = mode !== "content";
+  if (mode === "content" && photos.length && !working) busy(autoCategorize);
   $("modeHint").textContent = MODE_HINTS[mode];
   refreshButtons();
 });
 $("aiAdd").addEventListener("click", addAiCat);
 $("aiNew").addEventListener("keydown", (e) => { if (e.key === "Enter") addAiCat(); });
 $("aiReset").addEventListener("click", () => { aiCats = AI_DEFAULTS.map((c) => ({ folder: c.folder, prompts: [...c.prompts] })); renderAiChips(); });
-$("aiConf").addEventListener("input", () => { $("aiConfVal").textContent = $("aiConf").value + "%"; });
+$("aiConf").addEventListener("input", () => {
+  $("aiConfVal").textContent = $("aiConf").value + "%";
+  photos.forEach((p) => { if (!p.aiManual) p.aiChoice = null; });
+  renderCats();
+});
+$("catSave").addEventListener("click", () => busy(organize));
 renderAiChips();
+renderCats();
 $("selAll").addEventListener("click", () => setAll(true));
 $("selNone").addEventListener("click", () => setAll(false));
 $("organize").addEventListener("click", () => busy(organize));
