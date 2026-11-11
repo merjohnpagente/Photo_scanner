@@ -1218,8 +1218,18 @@ async function classifyPhotos(list, onEach) {
   const sig = key + "|" + labels.join("|");
   const prepare = async () => {
     if (eng.fast && eng.labelSig !== sig) {
-      setStatus("Preparing the categories...");
-      const vecs = await embedLabels(eng, labels);
+      setStatus("Preparing the categories (one time only)...");
+      // The folder text vectors never change, so they are saved on the phone after the first time.
+      const ck = "po_lv_" + sig.split("").reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) | 0, 7);
+      let vecs = null;
+      try { vecs = JSON.parse(localStorage.getItem(ck) || "null"); if (!vecs || vecs.length !== labels.length) vecs = null; } catch (_) { vecs = null; }
+      if (!vecs) {
+        vecs = await embedLabels(eng, labels);
+        try {
+          Object.keys(localStorage).filter((k) => k.startsWith("po_lv_")).forEach((k) => localStorage.removeItem(k));
+          localStorage.setItem(ck, JSON.stringify(vecs.map((v) => v.map((x) => Math.round(x * 1e4) / 1e4))));
+        } catch (_) { /* storage full: just do it again next time */ }
+      }
       const names = [...new Set(owner.values())];
       eng.labelNames = names;
       eng.labelVecs = names.map((n) => meanVec(vecs.filter((_, i) => owner.get(labels[i]) === n)));   // one vector per folder
@@ -1263,9 +1273,9 @@ async function classifyPhotos(list, onEach) {
 }
 function aiFolder(p) {
   if (autoOn()) {
-    const top = p.aiScores && p.aiScores[0];
-    if (!top || top.folder === AI_UNSORTED || top.score < Number($("aiConf").value) / 100) return AI_UNSORTED;
-    return autoFolders.get(top.folder) || AI_UNSORTED;
+    const pick = autoPick(p);
+    if (!pick) return AI_UNSORTED;
+    return autoFolders.get(pick.concept) || pick.group;
   }
   const min = Number($("aiConf").value) / 100;
   const best = p.aiScores && p.aiScores[0];
@@ -1352,25 +1362,44 @@ function catPhotos(name) {
 }
 
 // Groups the scanned photos into the folders the AI came up with (most photos first).
+// The AI splits its confidence between look-alike things (a dog photo: Dogs 24%, Wildlife 25%, Farm animals 13%).
+// So we first add up the scores of a whole group (Animals = all of those), and only then decide.
+// Returns { group, concept } for the photo, or null when the AI is not sure what it is.
+function autoPick(p) {
+  if (!isScanned(p)) return null;
+  const top = p.aiScores[0];
+  if (!top || top.folder === AI_UNSORTED) return null;
+  const sums = new Map(), best = new Map();
+  for (const o of p.aiScores) {
+    const g = AUTO_GROUP_OF.get(o.folder);
+    if (!g) continue;
+    sums.set(g, (sums.get(g) || 0) + o.score);
+    if (!best.has(g) || o.score > best.get(g).score) best.set(g, o);
+  }
+  let group = null, gs = 0;
+  for (const [g, v] of sums) if (v > gs) { gs = v; group = g; }
+  if (!group || gs < Number($("aiConf").value) / 100) return null;
+  return { group, concept: best.get(group).folder };
+}
+
 function rebuildAuto(list) {
   const counts = new Map();
   let total = 0;
   for (const p of list) {
     if (!isScanned(p)) continue;
     total++;
-    const c = p.aiScores[0].folder;
-    if (c !== AI_UNSORTED && p.aiScores[0].score >= Number($("aiConf").value) / 100) counts.set(c, (counts.get(c) || 0) + 1);
+    const pick = autoPick(p);
+    if (pick) counts.set(pick.concept, (counts.get(pick.concept) || 0) + 1);
   }
   const minCount = Math.max(2, Math.ceil(total * 0.01));
   const ranked = [...counts].sort((a, b) => b[1] - a[1]);
-  const map = new Map(), left = new Map();
+  const map = new Map();
   let own = 0;
+  // Things that show up often get their own folder (Dogs, Cats ...). Rare things go into their group (Animals ...),
+  // they never end up in Unsorted just because there are only a few of them.
   for (const [c, n] of ranked) {
     if (n >= minCount && own < AUTO_MAX) { map.set(c, c); own++; }
-    else { const g = AUTO_GROUP_OF.get(c); left.set(g, (left.get(g) || 0) + n); }
-  }
-  for (const [c] of ranked) {
-    if (!map.has(c)) { const g = AUTO_GROUP_OF.get(c); map.set(c, (left.get(g) || 0) >= minCount ? g : AI_UNSORTED); }
+    else map.set(c, AUTO_GROUP_OF.get(c));
   }
   autoFolders = map;
 }
