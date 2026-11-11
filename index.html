@@ -437,8 +437,8 @@ tr:last-child td { border-bottom: 0; }
     </div>
     <label class="airange">accuracy
       <select id="aiModel">
+        <option value="fast">faster (recommended)</option>
         <option value="better">better (slower, bigger first download)</option>
-        <option value="fast">faster (less accurate)</option>
       </select>
     </label>
     <label class="aicheck"><input type="checkbox" id="aiReview"> check the AI's guesses before copying</label>
@@ -1005,27 +1005,79 @@ async function loadClassifier(key) {
   catch (_) { throw new Error("Could not load the AI library. Check your internet connection and try again."); }
   lib.env.allowLocalModels = false;
   setStatus("Loading the AI model...");
-  classifiers[key] = await lib.pipeline("zero-shot-image-classification", AI_MODELS[key], {
-    progress_callback: (d) => {
-      if (d.status === "progress" && typeof d.progress === "number") {
-        setStatus(`Downloading the AI model: ${Math.round(d.progress)}%`);
-        progress.set(d.progress / 100);
-      }
-    },
-  });
-  return classifiers[key];
+  const id = AI_MODELS[key];
+  const cb = (d) => {
+    if (d.status === "progress" && typeof d.progress === "number") {
+      setStatus(`Downloading the AI model: ${Math.round(d.progress)}%`);
+      progress.set(d.progress / 100);
+    }
+  };
+  let eng;
+  try {
+    // Fast path: the text of the folders is embedded ONCE, then every photo only needs the image half.
+    const tokenizer = await lib.AutoTokenizer.from_pretrained(id);
+    const processor = await lib.AutoProcessor.from_pretrained(id);
+    const textModel = await lib.CLIPTextModelWithProjection.from_pretrained(id, { progress_callback: cb });
+    const visionModel = await lib.CLIPVisionModelWithProjection.from_pretrained(id, { progress_callback: cb });
+    eng = { lib, fast: true, tokenizer, processor, textModel, visionModel, labelSig: "", labelVecs: null };
+  } catch (_) {
+    const pipe = await lib.pipeline("zero-shot-image-classification", id, { progress_callback: cb });
+    eng = { lib, fast: false, pipe };
+  }
+  classifiers[key] = eng;
+  return eng;
+}
+
+const unitVec = (arr) => {
+  let n = 0;
+  for (const x of arr) n += x * x;
+  n = Math.sqrt(n) || 1;
+  return Array.from(arr, (x) => x / n);
+};
+
+async function embedLabels(eng, labels) {
+  const inputs = eng.tokenizer(labels.map((l) => "a photo of " + l), { padding: true, truncation: true });
+  const { text_embeds } = await eng.textModel(inputs);
+  const d = text_embeds.dims[text_embeds.dims.length - 1], data = text_embeds.data;
+  return labels.map((_, i) => unitVec(data.subarray(i * d, (i + 1) * d)));
+}
+
+// Decodes the photo at a small size (about 256 px wide). The model only looks at 224 px anyway,
+// and decoding a 12-megapixel photo in full is the slowest part of the scan.
+async function smallImage(eng, p) {
+  try {
+    const bmp = await createImageBitmap(p.file, { resizeWidth: 256, resizeQuality: "low" });
+    const c = document.createElement("canvas");
+    c.width = bmp.width; c.height = bmp.height;
+    c.getContext("2d").drawImage(bmp, 0, 0);
+    if (bmp.close) bmp.close();
+    return eng.lib.RawImage.fromCanvas(c);
+  } catch (_) {
+    return eng.lib.RawImage.read(p.url);
+  }
+}
+
+async function scoreImage(eng, img, labels) {
+  const { image_embeds } = await eng.visionModel(await eng.processor(img));
+  const v = unitVec(image_embeds.data);
+  const logits = eng.labelVecs.map((t) => 100 * t.reduce((sum, x, i) => sum + x * v[i], 0));
+  const m = Math.max(...logits);
+  const ex = logits.map((x) => Math.exp(x - m));
+  const total = ex.reduce((x, y) => x + y, 0);
+  return labels.map((label, i) => ({ label, score: ex[i] / total }));
 }
 
 // Gives every photo p.aiScores = [{ folder, score }] sorted from best to worst (scores add up to 1).
 async function classifyPhotos(list, onEach) {
   if (!aiCats.length) throw new Error("Add at least one folder for the AI to use.");
   const key = $("aiModel").value;
-  const clf = await loadClassifier(key);
+  const eng = await loadClassifier(key);
   const owner = new Map();
   for (const c of aiCats) for (const t of c.prompts) if (!owner.has(t)) owner.set(t, c.folder);
   for (const t of AI_OTHER) if (!owner.has(t)) owner.set(t, AI_UNSORTED);
   const labels = [...owner.keys()];
   const sig = key + "|" + labels.join("|");
+  if (eng.fast && eng.labelSig !== sig) { eng.labelVecs = await embedLabels(eng, labels); eng.labelSig = sig; }
   for (let i = 0; i < list.length; i++) {
     const p = list[i];
     if (p.aiSig === sig) continue;   // already scanned with these folders
@@ -1033,7 +1085,9 @@ async function classifyPhotos(list, onEach) {
     progress.set(i / list.length);
     p.aiChoice = null; p.aiManual = false;
     try {
-      const out = await clf(p.url, labels, { hypothesis_template: "a photo of {}" });
+      const out = eng.fast
+        ? await scoreImage(eng, await smallImage(eng, p), labels)
+        : await eng.pipe(p.url, labels, { hypothesis_template: "a photo of {}" });
       const sum = new Map();
       for (const o of out) sum.set(owner.get(o.label), (sum.get(owner.get(o.label)) || 0) + o.score);
       p.aiScores = [...sum.entries()].map(([folder, score]) => ({ folder, score })).sort((x, y) => y.score - x.score);
