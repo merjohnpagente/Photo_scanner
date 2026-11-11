@@ -1067,6 +1067,14 @@ function withTimeout(promise, ms, what) {
   return Promise.race([promise, limit]).finally(() => clearTimeout(t));
 }
 
+// One shared load: preloading at page start and "organize" never download the model twice.
+const aiLoading = {};
+function getClassifier(key) {
+  if (classifiers[key]) return Promise.resolve(classifiers[key]);
+  if (!aiLoading[key]) aiLoading[key] = loadClassifier(key).finally(() => { delete aiLoading[key]; });
+  return aiLoading[key];
+}
+
 async function loadClassifier(key, noGpu) {
   if (classifiers[key] && !noGpu) return classifiers[key];
   let lib;
@@ -1202,7 +1210,7 @@ async function classifyPhotos(list, onEach) {
   const cats = activeCats();
   if (!cats.length) throw new Error("Add at least one folder for the AI to use.");
   const key = $("aiModel").value;
-  let eng = await loadClassifier(key);
+  let eng = await getClassifier(key);
   const owner = new Map();
   for (const c of cats) for (const t of c.prompts) if (!owner.has(t)) owner.set(t, c.folder);
   for (const t of AI_OTHER) if (!owner.has(t)) owner.set(t, AI_UNSORTED);
@@ -1698,6 +1706,20 @@ $("photos").addEventListener("change", (e) => {
   if (e.target.name === "order") applyOrder();
   else if (e.target.name === "view") renderGrid();
 });
+// The AI model is downloaded ONCE and kept on the phone. Ask the browser not to delete it, and
+// start getting it ready as soon as the page opens, so photos are recognized right away later.
+try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (_) {}
+async function preloadAI() {
+  if (working || classifiers[$("aiModel").value]) return;
+  try {
+    const key = $("aiModel").value;
+    await getClassifier(key);
+    if (!working) { setStatus("The AI is ready and saved on your phone. Pick your photos."); progress.end(); }
+  } catch (_) { /* the real error shows when you pick photos */ }
+}
+if (checked("mode") === "content") setTimeout(preloadAI, 800);
+$("aiModel").addEventListener("change", () => { if (checked("mode") === "content") preloadAI(); });
+
 const MODE_HINTS = {
   date: "Photos go into year / month folders, or into one folder per camera.",
   camera: "Photos go into year / month folders, or into one folder per camera.",
@@ -1710,6 +1732,7 @@ $("sort").addEventListener("change", (e) => {
   $("aiBox").hidden = mode !== "content";
   $("cats").hidden = mode !== "content";
   if (mode === "content" && photos.length && !working) busy(autoCategorize);
+  else if (mode === "content") preloadAI();
   $("modeHint").textContent = MODE_HINTS[mode];
   refreshButtons();
 });
