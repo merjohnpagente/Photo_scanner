@@ -391,6 +391,8 @@ tr:last-child td { border-bottom: 0; }
 .catcard.haspics { min-height: 214px; }
 .catcard.haspics .ci { background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(6px); z-index: 1; }
 .catcard.haspics .cn { background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(6px); z-index: 1; }
+.dlbar { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 6px; }
+.dlbar .small { min-height: 44px; padding: 0 20px; font-size: 0.95rem; }
 .catcard h3 { font-size: 1.15rem; font-weight: 600; }
 .catcard .cd { margin-top: 2px; color: var(--muted); font-size: 0.85rem; line-height: 1.3; }
 .catcard .cc { margin-top: 8px; color: var(--c); font-weight: 600; font-size: 0.92rem; }
@@ -1496,6 +1498,22 @@ function openCategory(name) {
   const list = catPhotos(name);
   if (!list.length) { addNote("No photos in this category yet."); return; }
   addNote(`${list.length} photo(s). Change the folder of any photo that does not belong here.`);
+  // Download only this folder, or the whole group it belongs to (Dogs -> Animals = Cats + Dogs + ...).
+  const group = catGroup(name);
+  const inGroup = [...catCounts().keys()].filter((n) => n !== AI_UNSORTED && catGroup(n) === group);
+  const bar = el("div", "dlbar");
+  const one = el("button", "orb small", `download ${name} (${list.length})`);
+  one.type = "button";
+  one.addEventListener("click", () => busy(() => saveCats([name], name)));
+  bar.append(one);
+  if (inGroup.length > 1) {
+    const total = inGroup.reduce((a, n) => a + catPhotos(n).length, 0);
+    const all = el("button", "ghost-btn small", `download all ${group} (${total})`);
+    all.type = "button";
+    all.addEventListener("click", () => busy(() => saveCats(inGroup, group, group)));
+    bar.append(all);
+  }
+  $("results").append(bar);
   const names = catNames();
   const grid = el("div", "review");
   for (const p of list) {
@@ -1668,6 +1686,67 @@ async function organize() {
     [...perFolder.entries()].sort().map(([f, n]) => [f, String(n)]));
   addTable("Every photo", ["Photo", "Camera", "Date taken", "Size", "Result"], rows);
   setStatus(`Done. ${copied} photo(s) ${zip ? "added to the ZIP in" : "copied into"} ${perFolder.size} folder(s)` + (failed ? `, ${failed} failed.` : "."));
+}
+
+// The group a folder belongs to: Cats and Dogs -> Animals, Fast food -> Food. A folder with no group is its own group.
+function catGroup(n) { return CAT_INFO[n] ? n : (AUTO_GROUP_OF.get(n) || n); }
+
+// Saves only some categories (not everything). One folder: Sorted/Dogs. A group: Sorted/Animals/Dogs, Sorted/Animals/Cats ...
+// Without folder-write support the same photos are downloaded as one ZIP.
+async function saveCats(names, label, parent) {
+  const list = photos.filter((p) => p.selected && isScanned(p) && names.includes(catOf(p)));
+  if (!list.length) { setStatus("No photos in this folder."); return; }
+  let zip = null;
+  const zipUsed = new Map();
+  if (!canWrite) { await loadJSZip(); zip = new JSZip(); }
+  const perFolder = new Map();
+  const rows = [];
+  let copied = 0, failed = 0;
+  for (let i = 0; i < list.length; i++) {
+    const p = list[i];
+    setStatus(`${zip ? "Adding" : "Copying"} ${i + 1} of ${list.length}: ${p.name}`);
+    progress.set(i / list.length);
+    const parts = [SORTED_FOLDER, ...(parent ? [safeName(parent)] : []), safeName(catOf(p))];
+    const folder = parts.join("/");
+    try {
+      let finalName;
+      if (zip) {
+        if (!zipUsed.has(folder)) zipUsed.set(folder, new Set());
+        finalName = zipName(zipUsed.get(folder), p.name);
+        zip.file(`${folder}/${finalName}`, p.file);
+      } else {
+        const dir = await getDir(source.handle, parts);
+        finalName = await copyInto(dir, p.name, p.file);
+      }
+      copied++;
+      perFolder.set(folder, (perFolder.get(folder) || 0) + 1);
+      rows.push([p.path, `${zip ? "Added to ZIP" : "Copied to"} ${folder}/${finalName}`]);
+    } catch (err) {
+      failed++;
+      rows.push({ cells: [p.path, `Failed: ${err.message || err}`], className: "fail" });
+    }
+  }
+  if (zip && copied) {
+    setStatus("Building the ZIP...");
+    const blob = await zip.generateAsync({ type: "blob", compression: "STORE" }, (m) => progress.set(m.percent / 100));
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${safeName(label)}.zip`;
+    document.body.append(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+  }
+  resetResults(`Saved: ${label}`);
+  addSummary([
+    ["Photos", String(list.length)],
+    [zip ? "Added to ZIP" : "Copied", String(copied)],
+    ["Failed", String(failed)],
+    ["Saved in", zip ? `${safeName(label)}.zip (downloaded)` : `${source.name}/${SORTED_FOLDER}`],
+  ]);
+  addTable("Photos per folder", ["Folder", "Photos"], [...perFolder.entries()].sort().map(([f, n]) => [f, String(n)]));
+  addTable("Every photo", ["Photo", "Result"], rows);
+  setStatus(`Done. ${copied} photo(s) from ${label}` + (failed ? `, ${failed} failed.` : "."));
 }
 
 // Sends the selected photos to the API, which returns the groups of identical files.
