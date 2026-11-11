@@ -1021,8 +1021,10 @@ const AUTO_GROUPS = {
     ["Group photos", "a group of people posing", "a group photo of friends", "a team photo"], ["Family", "a family", "parents and children", "a family gathering"],
     ["Couples", "a couple", "two people in love", "a couple posing together"], ["Kids", "a baby", "a child", "kids playing"],
     ["Crowds", "a crowd of people", "a festival or a parade", "people at an event"], ["Weddings", "a wedding", "a bride and groom", "a wedding dress"],
-    ["Parties", "a birthday party", "a party with balloons", "people celebrating"], ["Graduations", "a graduation", "a person in a graduation toga", "a diploma ceremony"],
-    ["Sports", "people playing sports", "a basketball game", "a football or volleyball match"]],
+    ["Parties", "a birthday party", "a party with balloons", "people celebrating"], ["Graduations", "a graduation ceremony", "graduates wearing a toga and a graduation cap", "a student holding a diploma on a stage"],
+    ["Sports", "people playing sports", "a basketball game", "a football or volleyball match", "athletes competing", "a sports competition", "a running race"],
+    ["Games", "a sack race", "a tug of war game", "students playing traditional games", "a relay race or a field day game", "people playing a game outdoors", "a palaro or intramurals game"],
+    ["School events", "students in uniform at a school event", "a school program on a stage", "a flag ceremony", "students performing a dance", "an intramurals opening parade", "a school gymnasium full of students"]],
   Documents: [
     ["Screenshots", "a screenshot of a phone screen", "a screenshot of a chat", "a screenshot of an app"], ["Documents", "a document with text", "a printed paper", "a form or a certificate"],
     ["Receipts", "a receipt", "a bill or an invoice", "a shopping receipt"], ["ID cards", "an ID card", "a driver's license", "a passport page"],
@@ -1309,13 +1311,18 @@ function reviewAI(list) {
       const sel = document.createElement("select");
       sel.setAttribute("aria-label", "Folder for " + p.name);
       if (!p.aiManual) p.aiChoice = aiFolder(p);
-      for (const n of names) {
-        const o = document.createElement("option");
-        o.value = o.textContent = n;
-        if (n === p.aiChoice) o.selected = true;
-        sel.append(o);
-      }
-      sel.addEventListener("change", () => { p.aiChoice = sel.value; p.aiManual = true; renderCats(); });
+      addFolderOptions(sel, names.includes(p.aiChoice) ? names : [...names, p.aiChoice], p.aiChoice);
+      sel.addEventListener("change", () => {
+        const pick = chosenFolder(sel, p.aiChoice, names);
+        if (!pick) return;
+        if (![...sel.options].some((o) => o.value === pick)) {   // a brand new folder: add it to this list and select it
+          const o = document.createElement("option");
+          o.value = o.textContent = pick;
+          sel.insertBefore(o, sel.lastElementChild);
+        }
+        sel.value = pick;
+        p.aiChoice = pick; p.aiManual = true; renderCats();
+      });
       card.append(img, nm, guess, sel);
       grid.append(card);
     }
@@ -1431,8 +1438,37 @@ function catCounts() {
   }
   return counts;
 }
+// ---- "+ New folder" option: lets you type your own folder name when none of the folders fit ----
+const NEW_FOLDER = "__new_folder__";
+function customNames() {
+  const base = new Set([...aiCats.map((c) => c.folder), ...AUTO_CATS.map((c) => c.folder), AI_UNSORTED]);
+  const out = new Set();
+  for (const p of photos) if (isScanned(p) && p.aiChoice && !base.has(p.aiChoice)) out.add(p.aiChoice);
+  return [...out];
+}
+function addFolderOptions(sel, names, current) {
+  for (const n of names) {
+    const o = document.createElement("option");
+    o.value = o.textContent = n;
+    if (n === current) o.selected = true;
+    sel.append(o);
+  }
+  const add = document.createElement("option");
+  add.value = NEW_FOLDER; add.textContent = "+ New folder...";
+  sel.append(add);
+}
+// Returns the folder the person chose (asking for a name when they picked "+ New folder..."), or null if they cancelled.
+function chosenFolder(sel, previous, names) {
+  if (sel.value !== NEW_FOLDER) return sel.value;
+  const raw = (window.prompt("Name of the new folder:") || "").trim();
+  if (!raw) { sel.value = previous; return null; }
+  const name = safeName(raw).slice(0, 60);
+  const same = [...names, ...customNames()].find((n) => n.toLowerCase() === name.toLowerCase());   // reuse an existing folder instead of making a twin
+  return same || name;
+}
+
 function catNames() {
-  if (!autoOn()) return [...aiCats.map((c) => c.folder), AI_UNSORTED];
+  if (!autoOn()) return [...aiCats.map((c) => c.folder), ...customNames(), AI_UNSORTED];
   const names = new Set();
   for (const p of photos) if (isScanned(p)) names.add(catOf(p));
   names.delete(AI_UNSORTED);
@@ -1447,7 +1483,7 @@ function renderCats() {
   let done = 0;
   for (const p of photos) if (isScanned(p)) done++;
   let names;
-  if (!autoOn()) names = [...aiCats.map((c) => c.folder), AI_UNSORTED];
+  if (!autoOn()) names = [...aiCats.map((c) => c.folder), ...customNames(), AI_UNSORTED];
   else if (!done) names = ["Animals", "Nature", "Places", "Food", "Vehicles", "People"];   // placeholders until the scan starts
   else names = [...counts.keys()].filter((n) => n !== AI_UNSORTED).sort((a, b) => counts.get(b) - counts.get(a)).concat(AI_UNSORTED);
   grid.replaceChildren();
@@ -1525,14 +1561,11 @@ function openCategory(name) {
     const guess = el("div", "rguess", (p.aiScores || []).slice(0, 3).map((g) => `${g.folder} ${Math.round(g.score * 100)}%`).join(" \u00b7 "));
     const sel = document.createElement("select");
     sel.setAttribute("aria-label", "Folder for " + p.name);
-    for (const n of names) {
-      const o = document.createElement("option");
-      o.value = o.textContent = n;
-      if (n === name) o.selected = true;
-      sel.append(o);
-    }
+    addFolderOptions(sel, names, name);
     sel.addEventListener("change", () => {
-      p.aiChoice = sel.value; p.aiManual = true;
+      const pick = chosenFolder(sel, name, names);
+      if (!pick) return;
+      p.aiChoice = pick; p.aiManual = true;
       card.remove();
       renderCats();
     });
