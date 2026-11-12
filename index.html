@@ -1068,8 +1068,12 @@ function addAiCat() {
 const GEMINI_MODEL = "gemini-flash-latest";
 const GEMINI_PROXY = "";   // your Cloudflare Worker URL (see README). When set, nobody has to paste a key.
 const GEMINI_BATCH = 6;
-const getGeminiKey = () => { try { return (localStorage.getItem("po_gemini_key") || "").trim(); } catch (_) { return ""; } };
+// GitHub Actions replaces the placeholder below with the GEMINI_API_KEY repository secret when the site is deployed.
+const GEMINI_BUILD_KEY = "__GEMINI_API_KEY__";
+const buildKey = () => (GEMINI_BUILD_KEY.startsWith("__") ? "" : GEMINI_BUILD_KEY);
+const getGeminiKey = () => { if (buildKey()) return buildKey(); try { return (localStorage.getItem("po_gemini_key") || "").trim(); } catch (_) { return ""; } };
 function saveGeminiKey() {
+  if (buildKey() || GEMINI_PROXY) return;
   const v = $("geminiKey").value.trim();
   try { if (v) localStorage.setItem("po_gemini_key", v); else localStorage.removeItem("po_gemini_key"); } catch (_) {}
 }
@@ -1780,7 +1784,7 @@ async function preloadAI() {
 }
 if (checked("mode") === "content") setTimeout(preloadAI, 800);
 $("geminiKey").value = getGeminiKey();
-if (GEMINI_PROXY) $("geminiKey").closest("label").hidden = true;   // no key field needed
+if (GEMINI_PROXY || buildKey()) $("geminiKey").closest("label").hidden = true;   // no key field needed
 $("geminiKey").addEventListener("change", () => { saveGeminiKey(); if (checked("mode") === "content") preloadAI(); });
 
 const MODE_HINTS = {
