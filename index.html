@@ -1076,6 +1076,15 @@ function withTimeout(promise, ms, what) {
   return Promise.race([promise, limit]).finally(() => clearTimeout(t));
 }
 
+// Is any model file stored in the browser cache? (Needs https or localhost; it does not work from a file:// page.)
+async function modelIsSaved() {
+  try {
+    if (!("caches" in self)) return false;
+    const c = await caches.open("transformers-cache");
+    return (await c.keys()).length > 0;
+  } catch (_) { return false; }
+}
+
 // One shared load: preloading at page start and "organize" never download the model twice.
 const aiLoading = {};
 function getClassifier(key) {
@@ -1090,7 +1099,9 @@ async function loadClassifier(key, noGpu) {
   try { lib = await import(AI_LIB); }
   catch (_) { throw new Error("Could not load the AI library. Check your internet connection and try again."); }
   lib.env.allowLocalModels = false;
-  setStatus("Loading the AI model...");
+  lib.env.useBrowserCache = true;   // keep every downloaded model file in the browser (Cache API) for next time
+  try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (_) {}
+  setStatus((await modelIsSaved()) ? "Loading the saved AI model..." : "Loading the AI model...");
   const id = AI_MODELS[key];
   // The library reports progress PER FILE (tokenizer, text model, image model), so the raw number jumps
   // around and restarts. Add all files together and never let the shown percent go backwards.
@@ -1887,7 +1898,12 @@ async function preloadAI() {
   try {
     const key = $("aiModel").value;
     await getClassifier(key);
-    if (!working) { setStatus("The AI is ready and saved on your phone. Pick your photos."); progress.end(); }
+    if (!working) {
+      setStatus((await modelIsSaved())
+        ? "The AI is ready and saved on this device. It will not download again. Pick your photos."
+        : "The AI is ready, but this browser could not save it (open the page with https). Pick your photos.");
+      progress.end();
+    }
   } catch (_) { /* the real error shows when you pick photos */ }
 }
 if (checked("mode") === "content") setTimeout(preloadAI, 800);
