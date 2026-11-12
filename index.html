@@ -1084,12 +1084,26 @@ async function geminiImage(p) {
   return c.toDataURL("image/jpeg", 0.7).split(",")[1];
 }
 
+// When the page is opened from  python app.py  (http://127.0.0.1:5000) and GEMINI_API_KEY is in the .env file,
+// the key stays on the PC: the page calls /api/gemini and the server adds the key. Otherwise the pasted key is used.
+let serverKey = null;
+async function hasServerKey() {
+  if (serverKey !== null) return serverKey;
+  try {
+    const r = await fetch("/api/gemini-status", { cache: "no-store" });
+    serverKey = r.ok && (await r.json()).enabled === true;
+  } catch (_) { serverKey = false; }
+  return serverKey;
+}
+
 async function geminiCall(key, body) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+  const viaServer = key === "SERVER";
+  const url = viaServer ? "/api/gemini" : `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
   for (let attempt = 0; attempt < 5; attempt++) {
     let res;
     try {
-      res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key }, body: JSON.stringify(body) });
+      const headers = viaServer ? { "Content-Type": "application/json" } : { "Content-Type": "application/json", "x-goog-api-key": key };
+      res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
     } catch (_) { throw new Error("Could not reach Gemini. Check your internet connection."); }
     if (res.ok) return res.json();
     if (res.status === 400 || res.status === 403) {
@@ -1148,8 +1162,8 @@ async function classifyPhotos(list, onEach) {
   const cats = activeCats();
   if (!cats.length) throw new Error("Add at least one folder for the AI to use.");
   saveGeminiKey();
-  const key = getGeminiKey();
-  if (!key) throw new Error("Paste your Gemini API key first (free at aistudio.google.com/apikey).");
+  const key = (await hasServerKey()) ? "SERVER" : getGeminiKey();
+  if (!key) throw new Error("Set GEMINI_API_KEY in the .env file (run python app.py), or paste your Gemini API key (free at aistudio.google.com/apikey).");
   const sig = "gemini|" + cats.map((c) => c.folder).join("|");
   const todo = list.filter((p) => p.aiSig !== sig);   // photos already scanned with these folders are skipped
   const already = list.length - todo.length;
@@ -1760,7 +1774,7 @@ $("photos").addEventListener("change", (e) => {
 try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (_) {}
 async function preloadAI() {
   if (working) return;
-  setStatus(getGeminiKey() ? "Gemini is ready. Pick your photos." : "Paste your Gemini API key to use content (AI).");
+  setStatus((await hasServerKey()) || getGeminiKey() ? "Gemini is ready. Pick your photos." : "Add your Gemini API key (.env file or paste it) to use content (AI).");
 }
 if (checked("mode") === "content") setTimeout(preloadAI, 800);
 $("geminiKey").value = getGeminiKey();
