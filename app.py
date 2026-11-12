@@ -37,32 +37,12 @@ import hashlib
 import json
 import os
 import re
-import urllib.error
-import urllib.request
 from collections import defaultdict
 
 from flask import Flask, jsonify, request, send_from_directory
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".bmp"}
 HERE = os.path.dirname(os.path.abspath(__file__))
-
-
-
-def load_env():
-    """Reads KEY=value lines from the .env file next to this script (no extra package needed)."""
-    path = os.path.join(HERE, ".env")
-    if not os.path.isfile(path):
-        return
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-
-
-load_env()
-GEMINI_MODEL = "gemini-flash-latest"
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024  # 2 GB per request
@@ -71,8 +51,6 @@ app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024 * 1024  # 2 GB per request
 @app.after_request
 def allow_other_origins(response):
     """Lets the page call this API from GitHub Pages, from disk, or from any other address."""
-    if request.path.startswith("/api/gemini"):
-        return response   # uses your secret key: only this local page may call it (no CORS header)
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     response.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
@@ -191,36 +169,8 @@ def duplicates():
     return jsonify(total_files=total, groups=groups, extra_copies=extras, wasted_bytes=wasted)
 
 
-@app.route("/api/gemini-status")
-def gemini_status():
-    """Tells the page whether the key is set in .env (the key itself is never sent to the page)."""
-    return jsonify(enabled=bool(os.environ.get("GEMINI_API_KEY")))
-
-
-@app.route("/api/gemini", methods=["POST"])
-def gemini_proxy():
-    """Forwards the page's request to Google Gemini using the key from .env."""
-    key = os.environ.get("GEMINI_API_KEY", "").strip()
-    if not key:
-        return jsonify(error={"message": "GEMINI_API_KEY is not set in the .env file."}), 400
-    req = urllib.request.Request(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
-        data=request.get_data(),
-        headers={"Content-Type": "application/json", "x-goog-api-key": key},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=120) as r:
-            return r.read(), r.status, {"Content-Type": "application/json"}
-    except urllib.error.HTTPError as e:
-        return e.read(), e.code, {"Content-Type": "application/json"}
-    except Exception:
-        return jsonify(error={"message": "Could not reach Gemini."}), 502
-
-
 if __name__ == "__main__":
     print(f"Folder: {HERE}")
     print(f"Page:   {find_page() or 'NOT FOUND - put index.html in the folder above'}")
-    print("Gemini key: " + ("found in .env" if os.environ.get("GEMINI_API_KEY") else "not set (create a .env file, see .env.example)"))
     print("Open http://127.0.0.1:5000 in Chrome or Edge")
     app.run(host="127.0.0.1", port=5000)
