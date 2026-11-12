@@ -1066,6 +1066,7 @@ function addAiCat() {
 // ---------------------------------------------------------------- GEMINI AI ----
 // Photos are recognized online by Google Gemini, so nothing big is downloaded to this device.
 const GEMINI_MODEL = "gemini-flash-latest";
+const GEMINI_PROXY = "";   // your Cloudflare Worker URL (see README). When set, nobody has to paste a key.
 const GEMINI_BATCH = 6;
 const getGeminiKey = () => { try { return (localStorage.getItem("po_gemini_key") || "").trim(); } catch (_) { return ""; } };
 function saveGeminiKey() {
@@ -1097,8 +1098,9 @@ async function hasServerKey() {
 }
 
 async function geminiCall(key, body) {
-  const viaServer = key === "SERVER";
-  const url = viaServer ? "/api/gemini" : `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+  const viaProxy = key === "PROXY";
+  const viaServer = key === "SERVER" || viaProxy;
+  const url = viaProxy ? GEMINI_PROXY : viaServer ? "/api/gemini" : `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
   for (let attempt = 0; attempt < 5; attempt++) {
     let res;
     try {
@@ -1162,7 +1164,7 @@ async function classifyPhotos(list, onEach) {
   const cats = activeCats();
   if (!cats.length) throw new Error("Add at least one folder for the AI to use.");
   saveGeminiKey();
-  const key = (await hasServerKey()) ? "SERVER" : getGeminiKey();
+  const key = GEMINI_PROXY ? "PROXY" : (await hasServerKey()) ? "SERVER" : getGeminiKey();
   if (!key) throw new Error("Set GEMINI_API_KEY in the .env file (run python app.py), or paste your Gemini API key (free at aistudio.google.com/apikey).");
   const sig = "gemini|" + cats.map((c) => c.folder).join("|");
   const todo = list.filter((p) => p.aiSig !== sig);   // photos already scanned with these folders are skipped
@@ -1774,10 +1776,11 @@ $("photos").addEventListener("change", (e) => {
 try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (_) {}
 async function preloadAI() {
   if (working) return;
-  setStatus((await hasServerKey()) || getGeminiKey() ? "Gemini is ready. Pick your photos." : "Add your Gemini API key (.env file or paste it) to use content (AI).");
+  setStatus(GEMINI_PROXY || (await hasServerKey()) || getGeminiKey() ? "Gemini is ready. Pick your photos." : "Add your Gemini API key (.env file or paste it) to use content (AI).");
 }
 if (checked("mode") === "content") setTimeout(preloadAI, 800);
 $("geminiKey").value = getGeminiKey();
+if (GEMINI_PROXY) $("geminiKey").closest("label").hidden = true;   // no key field needed
 $("geminiKey").addEventListener("change", () => { saveGeminiKey(); if (checked("mode") === "content") preloadAI(); });
 
 const MODE_HINTS = {
