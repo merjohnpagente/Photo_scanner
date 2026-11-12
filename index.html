@@ -449,17 +449,14 @@ tr:last-child td { border-bottom: 0; }
       <button id="aiReset" type="button" class="txtbtn">reset</button>
     </div>
     </div>
-    <label class="airange">accuracy
-      <select id="aiModel">
-        <option value="fast">faster (recommended)</option>
-        <option value="better">better (slower, bigger first download)</option>
-      </select>
+    <label class="airange">Gemini API key (free)
+      <input id="geminiKey" type="password" placeholder="paste your key from aistudio.google.com/apikey" autocomplete="off" aria-label="Gemini API key">
     </label>
     <label class="aicheck"><input type="checkbox" id="aiReview"> check the AI's guesses before copying</label>
     <label class="airange" id="aiConfRow">minimum match (low = sort more photos, high = too strict, many go to Unsorted)
       <input id="aiConf" type="range" min="0" max="70" step="5" value="25"><b id="aiConfVal">25%</b>
     </label>
-    <p class="hint">The AI runs on your device. The first time it downloads a model (needs internet), then it is cached. Photos it is not sure about go into "Unsorted". You can fix any wrong guess before copying.</p>
+    <p class="hint">Photos are recognized by Google Gemini (needs internet, nothing is downloaded). Small copies of your photos are sent to Google. Your key is saved only in this browser. Photos it is not sure about go into "Unsorted". You can fix any wrong guess before copying.</p>
   </div>
 </section>
 
@@ -1066,256 +1063,108 @@ function addAiCat() {
   renderCats();
 }
 
-// Phones often "support" WebGPU but freeze while starting the big model (it never errors, it just hangs).
-// So on phones we use the CPU (WASM) path, and every start-up step has a time limit.
-const IS_MOBILE = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent) ||
-  (navigator.maxTouchPoints > 1 && !matchMedia("(pointer: fine)").matches);
-function withTimeout(promise, ms, what) {
-  let t;
-  const limit = new Promise((_, reject) => { t = setTimeout(() => reject(new Error(what + " took too long")), ms); });
-  return Promise.race([promise, limit]).finally(() => clearTimeout(t));
+// ---------------------------------------------------------------- GEMINI AI ----
+// Photos are recognized online by Google Gemini, so nothing big is downloaded to this device.
+const GEMINI_MODEL = "gemini-flash-latest";
+const GEMINI_BATCH = 6;
+const getGeminiKey = () => { try { return (localStorage.getItem("po_gemini_key") || "").trim(); } catch (_) { return ""; } };
+function saveGeminiKey() {
+  const v = $("geminiKey").value.trim();
+  try { if (v) localStorage.setItem("po_gemini_key", v); else localStorage.removeItem("po_gemini_key"); } catch (_) {}
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Shrinks a photo to ~512 px wide JPEG (base64) so it uploads fast.
+async function geminiImage(p) {
+  const bmp = await createImageBitmap(p.file, { resizeWidth: 512, resizeQuality: "medium" });
+  const c = document.createElement("canvas");
+  c.width = bmp.width; c.height = bmp.height;
+  c.getContext("2d").drawImage(bmp, 0, 0);
+  if (bmp.close) bmp.close();
+  return c.toDataURL("image/jpeg", 0.7).split(",")[1];
 }
 
-// Is any model file stored in the browser cache? (Needs https or localhost; it does not work from a file:// page.)
-async function modelIsSaved() {
-  try {
-    if (!("caches" in self)) return false;
-    const c = await caches.open("transformers-cache");
-    return (await c.keys()).length > 0;
-  } catch (_) { return false; }
-}
-
-// One shared load: preloading at page start and "organize" never download the model twice.
-const aiLoading = {};
-function getClassifier(key) {
-  if (classifiers[key]) return Promise.resolve(classifiers[key]);
-  if (!aiLoading[key]) aiLoading[key] = loadClassifier(key).finally(() => { delete aiLoading[key]; });
-  return aiLoading[key];
-}
-
-async function loadClassifier(key, noGpu) {
-  if (classifiers[key] && !noGpu) return classifiers[key];
-  let lib;
-  try { lib = await import(AI_LIB); }
-  catch (_) { throw new Error("Could not load the AI library. Check your internet connection and try again."); }
-  lib.env.allowLocalModels = false;
-  lib.env.useBrowserCache = true;   // keep every downloaded model file in the browser (Cache API) for next time
-  try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (_) {}
-  setStatus((await modelIsSaved()) ? "Loading the saved AI model..." : "Loading the AI model...");
-  const id = AI_MODELS[key];
-  // The library reports progress PER FILE (tokenizer, text model, image model), so the raw number jumps
-  // around and restarts. Add all files together and never let the shown percent go backwards.
-  const files = {};
-  let shown = 0;
-  const cb = (d) => {
-    if (!d || !d.file) return;
-    if (d.status === "progress" && typeof d.loaded === "number" && d.total > 0) {
-      files[d.file] = { loaded: d.loaded, total: d.total };
-    } else if (d.status === "done" && files[d.file]) {
-      files[d.file].loaded = files[d.file].total;
-    } else return;
-    let loaded = 0, total = 0;
-    for (const f of Object.values(files)) { loaded += f.loaded; total += f.total; }
-    if (!total) return;
-    lastAct = Date.now();
-    if (loaded >= total) {   // every file is here: the model is now being built in memory (can take a minute)
-      progress.set(1);
-      setStatus("Starting the AI model (can take a minute, please wait)...");
-      return;
+async function geminiCall(key, body) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    let res;
+    try {
+      res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": key }, body: JSON.stringify(body) });
+    } catch (_) { throw new Error("Could not reach Gemini. Check your internet connection."); }
+    if (res.ok) return res.json();
+    if (res.status === 400 || res.status === 403) {
+      let msg = ""; try { msg = (await res.json()).error.message; } catch (_) {}
+      throw new Error("Gemini did not accept the request" + (msg ? ": " + msg : ". Check your API key."));
     }
-    shown = Math.max(shown, Math.min(99, Math.floor((loaded / total) * 100)));
-    setStatus(`Downloading the AI model: ${shown}%`);
-    progress.set(shown / 100);
-  };
-  // The time limit only counts time with NO activity, so a slow download is never cancelled.
-  let lastAct = Date.now();
-  const withIdle = (promise, ms, what) => new Promise((res, rej) => {
-    const t = setInterval(() => { if (Date.now() - lastAct > ms) { clearInterval(t); rej(new Error(what + " took too long")); } }, 1000);
-    promise.then((v) => { clearInterval(t); res(v); }, (e) => { clearInterval(t); rej(e); });
+    if (res.status === 429 || res.status >= 500) {   // too many requests / busy: wait and try again
+      setStatus(`Gemini is busy, waiting a bit (try ${attempt + 2} of 5)...`);
+      await sleep(4000 * (attempt + 1));
+      continue;
+    }
+    throw new Error("Gemini error " + res.status);
+  }
+  throw new Error("Gemini is too busy right now (rate limit). Wait a minute and try again.");
+}
+
+// Asks Gemini to pick ONE folder for each photo. Returns [{ folder, score }] or null per photo.
+async function geminiBatch(key, chunk, cats) {
+  const names = cats.map((c) => c.folder);
+  const imgs = await Promise.all(chunk.map((p) => geminiImage(p).catch(() => null)));
+  const parts = [{ text:
+    "You sort photos into folders. For each image below (numbered in order, starting at 0), choose the ONE best folder from this list:\n" +
+    cats.map((c) => `- ${c.folder}` + (c.prompts && c.prompts[0] ? ` (e.g. ${c.prompts[0]})` : "")).join("\n") +
+    `\nIf no folder fits, use "${AI_UNSORTED}". Give a confidence from 0 to 1. Return one result for every image.` }];
+  const sent = [];
+  imgs.forEach((data, i) => {
+    if (!data) return;
+    sent.push(i);
+    parts.push({ text: `Image ${i}:` }, { inline_data: { mime_type: "image/jpeg", data } });
   });
-  let eng = null;
-  try {
-    // Fast path: the text of the folders is embedded ONCE, then every photo only needs the image half.
-    const tokenizer = await withTimeout(lib.AutoTokenizer.from_pretrained(id), 120000, "Loading the tokenizer");
-    const processor = await withTimeout(lib.AutoProcessor.from_pretrained(id), 120000, "Loading the image processor");
-    // Try the phone's GPU first (WebGPU), then the quantized (smaller, faster) CPU model, then the plain CPU model.
-    const attempts = [];
-    // Desktop GPU: both models on WebGPU (fp32). Phone GPU: only the image half (the slow part) on WebGPU in
-    // the smaller fp16 format; the folder text runs once on the CPU. If the GPU ever fails, it is remembered.
-    const gpuBad = (() => { try { return localStorage.getItem("po_gpu_bad") === "1"; } catch (_) { return false; } })();
-    const cpu = { device: "wasm", dtype: "q8" };
-    if (!noGpu && !gpuBad && navigator.gpu) {
-      if (IS_MOBILE) attempts.push({ text: cpu, vision: { device: "webgpu", dtype: "fp16" }, gpu: true });
-      else attempts.push({ text: { device: "webgpu", dtype: "fp32" }, vision: { device: "webgpu", dtype: "fp32" }, gpu: true });
-    }
-    attempts.push({ text: cpu, vision: cpu }, { text: { device: "wasm" }, vision: { device: "wasm" } });
-    for (const a of attempts) {
-      try {
-        const ms = a.gpu ? 60000 : 240000;   // a hung GPU start (no activity) falls back to the CPU
-        lastAct = Date.now();
-        // Both models download together, so the percent is one honest number.
-        const [textModel, visionModel] = await withIdle(Promise.all([
-          lib.CLIPTextModelWithProjection.from_pretrained(id, { progress_callback: cb, ...a.text }),
-          lib.CLIPVisionModelWithProjection.from_pretrained(id, { progress_callback: cb, ...a.vision }),
-        ]), ms, "Starting the AI model");
-        eng = { lib, fast: true, device: a.vision.device, tokenizer, processor, textModel, visionModel, labelSig: "", labelVecs: null };
-        break;
-      } catch (_) {
-        if (a.gpu) { try { localStorage.setItem("po_gpu_bad", "1"); } catch (_) {} }   // do not try the GPU again next time
-      }
-    }
-    if (!eng) throw new Error("no fast model");
-    setStatus("Starting the AI model (can take a minute on a phone)...");
-  } catch (_) {
-    setStatus("Starting the AI model (backup way)...");
-    const pipe = await withTimeout(lib.pipeline("zero-shot-image-classification", id, { progress_callback: cb }), 300000,
-      "Starting the AI model. Try the Fast model, or close other apps to free memory. It");
-    eng = { lib, fast: false, device: "wasm", pipe };
-  }
-  classifiers[key] = eng;
-  return eng;
-}
-
-const unitVec = (arr) => {
-  let n = 0;
-  for (const x of arr) n += x * x;
-  n = Math.sqrt(n) || 1;
-  return Array.from(arr, (x) => x / n);
-};
-
-// CLIP works best when every label is written in several sentence styles and the results are averaged.
-const AI_TEMPLATES = ["a photo of {}", "a picture of {}", "a close-up photo of {}"];
-async function embedLabels(eng, labels) {
-  const texts = [];
-  for (const l of labels) for (const t of AI_TEMPLATES) texts.push(t.replace("{}", l));
-  const out = [];
-  for (let i = 0; i < texts.length; i += 96) {   // small pieces so a phone does not run out of memory
-    const inputs = eng.tokenizer(texts.slice(i, i + 96), { padding: true, truncation: true });
-    const { text_embeds } = await eng.textModel(inputs);
-    const d = text_embeds.dims[text_embeds.dims.length - 1], data = text_embeds.data;
-    for (let k = 0; k < text_embeds.dims[0]; k++) out.push(unitVec(data.subarray(k * d, (k + 1) * d)));
-    await new Promise((r) => setTimeout(r));
-  }
-  const n = AI_TEMPLATES.length;
-  return labels.map((_, i) => meanVec(out.slice(i * n, (i + 1) * n)));
-}
-function meanVec(vecs) {
-  const m = new Array(vecs[0].length).fill(0);
-  for (const v of vecs) for (let i = 0; i < m.length; i++) m[i] += v[i];
-  return unitVec(m);
-}
-
-// Decodes the photo at a small size (about 256 px wide). The model only looks at 224 px anyway,
-// and decoding a 12-megapixel photo in full is the slowest part of the scan.
-async function smallImage(eng, p) {
-  try {
-    const bmp = await createImageBitmap(p.file, { resizeWidth: 256, resizeQuality: "low" });
-    const c = document.createElement("canvas");
-    c.width = bmp.width; c.height = bmp.height;
-    c.getContext("2d").drawImage(bmp, 0, 0);
-    if (bmp.close) bmp.close();
-    return eng.lib.RawImage.fromCanvas(c);
-  } catch (_) {
-    return eng.lib.RawImage.read(p.url);
-  }
-}
-
-// Scores several photos in ONE model call (much faster than one call per photo).
-async function scoreImages(eng, imgs, labels) {
-  const { image_embeds } = await eng.visionModel(await eng.processor(imgs));
-  const d = image_embeds.dims[image_embeds.dims.length - 1], data = image_embeds.data;
-  return imgs.map((_, b) => {
-    const v = unitVec(data.subarray(b * d, (b + 1) * d));
-    const logits = eng.labelVecs.map((t) => 100 * t.reduce((sum, x, i) => sum + x * v[i], 0));
-    const m = Math.max(...logits);
-    const ex = logits.map((x) => Math.exp(x - m));
-    const total = ex.reduce((x, y) => x + y, 0);
-    return labels.map((label, i) => ({ label, score: ex[i] / total }));
+  const out = chunk.map(() => null);
+  if (!sent.length) return out;
+  const data = await geminiCall(key, {
+    contents: [{ role: "user", parts }],
+    generationConfig: {
+      temperature: 0,
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: "ARRAY",
+        items: { type: "OBJECT", required: ["index", "folder", "confidence"], properties: {
+          index: { type: "INTEGER" },
+          folder: { type: "STRING", enum: [...names, AI_UNSORTED] },
+          confidence: { type: "NUMBER" } } } },
+    },
   });
+  let arr = [];
+  try { arr = JSON.parse(data.candidates[0].content.parts.map((x) => x.text || "").join("")); } catch (_) {}
+  for (const r of arr) {
+    if (r && sent.includes(r.index)) out[r.index] = { folder: r.folder, score: Math.max(0, Math.min(1, Number(r.confidence) || 0)) };
+  }
+  return out;
 }
 
-// Returns one result per photo (or null when the photo can't be read, e.g. TIFF).
-async function runBatch(eng, chunk, labels) {
-  const res = chunk.map(() => null);
-  if (!eng.fast) {
-    for (let i = 0; i < chunk.length; i++) {
-      try { res[i] = await eng.pipe(chunk[i].url, labels, { hypothesis_template: "a photo of {}" }); } catch (_) {}
-    }
-    return res;
-  }
-  const imgs = await Promise.all(chunk.map((p) => smallImage(eng, p).catch(() => null)));
-  const ok = [];
-  imgs.forEach((im, i) => { if (im) ok.push(i); });
-  if (ok.length) {
-    const outs = await scoreImages(eng, ok.map((i) => imgs[i]), labels);
-    ok.forEach((i, k) => { res[i] = outs[k]; });
-  }
-  return res;
-}
-
-// Gives every photo p.aiScores = [{ folder, score }] sorted from best to worst (scores add up to 1).
+// Gives every photo p.aiScores = [{ folder, score }] sorted from best to worst.
 async function classifyPhotos(list, onEach) {
   const cats = activeCats();
   if (!cats.length) throw new Error("Add at least one folder for the AI to use.");
-  const key = $("aiModel").value;
-  let eng = await getClassifier(key);
-  const owner = new Map();
-  for (const c of cats) for (const t of c.prompts) if (!owner.has(t)) owner.set(t, c.folder);
-  for (const t of AI_OTHER) if (!owner.has(t)) owner.set(t, AI_UNSORTED);
-  const labels = [...owner.keys()];
-  const sig = key + "|" + labels.join("|");
-  const prepare = async () => {
-    if (eng.fast && eng.labelSig !== sig) {
-      setStatus("Preparing the categories (one time only)...");
-      // The folder text vectors never change, so they are saved on the phone after the first time.
-      const ck = "po_lv_" + sig.split("").reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) | 0, 7);
-      let vecs = null;
-      try { vecs = JSON.parse(localStorage.getItem(ck) || "null"); if (!vecs || vecs.length !== labels.length) vecs = null; } catch (_) { vecs = null; }
-      if (!vecs) {
-        vecs = await embedLabels(eng, labels);
-        try {
-          Object.keys(localStorage).filter((k) => k.startsWith("po_lv_")).forEach((k) => localStorage.removeItem(k));
-          localStorage.setItem(ck, JSON.stringify(vecs.map((v) => v.map((x) => Math.round(x * 1e4) / 1e4))));
-        } catch (_) { /* storage full: just do it again next time */ }
-      }
-      const names = [...new Set(owner.values())];
-      eng.labelNames = names;
-      eng.labelVecs = names.map((n) => meanVec(vecs.filter((_, i) => owner.get(labels[i]) === n)));   // one vector per folder
-      eng.labelSig = sig;
-    }
-  };
-  const names = () => (eng.fast ? eng.labelNames : labels);
-  await prepare();
+  saveGeminiKey();
+  const key = getGeminiKey();
+  if (!key) throw new Error("Paste your Gemini API key first (free at aistudio.google.com/apikey).");
+  const sig = "gemini|" + cats.map((c) => c.folder).join("|");
   const todo = list.filter((p) => p.aiSig !== sig);   // photos already scanned with these folders are skipped
   const already = list.length - todo.length;
-  const BATCH = eng.fast ? (eng.device === "webgpu" && !IS_MOBILE ? 16 : 8) : 1;
-  for (let i = 0; i < todo.length; i += BATCH) {
-    const chunk = todo.slice(i, i + BATCH);
-    setStatus(`Scanning ${already + i + 1} of ${list.length}...`);
+  for (let i = 0; i < todo.length; i += GEMINI_BATCH) {
+    const chunk = todo.slice(i, i + GEMINI_BATCH);
+    setStatus(`Scanning ${already + i + 1} of ${list.length} with Gemini...`);
     progress.set((already + i) / list.length);
-    let outs;
-    try { outs = await runBatch(eng, chunk, names()); }
-    catch (_) {
-      outs = chunk.map(() => null);
-      if (eng.device === "webgpu") {   // the GPU failed: switch to the CPU and try this batch again
-        try { localStorage.setItem("po_gpu_bad", "1"); } catch (_) {}
-        try { eng = await loadClassifier(key, true); await prepare(); outs = await runBatch(eng, chunk, names()); } catch (_) {}
-      }
-    }
+    const outs = await geminiBatch(key, chunk, cats);
     chunk.forEach((p, k) => {
       p.aiChoice = null; p.aiManual = false;
-      const out = outs[k];
-      if (out) {
-        const sum = new Map();
-        for (const o of out) { const f = eng.fast ? o.label : owner.get(o.label); sum.set(f, (sum.get(f) || 0) + o.score); }
-        p.aiScores = [...sum.entries()].map(([folder, score]) => ({ folder, score })).sort((x, y) => y.score - x.score);
-      } else {
-        p.aiScores = [{ folder: AI_UNSORTED, score: 0 }];
-      }
+      p.aiScores = outs[k] ? [outs[k]] : [{ folder: AI_UNSORTED, score: 0 }];
       p.aiSig = sig;
     });
     if (onEach) onEach();
-    await new Promise((r) => setTimeout(r));   // let the page repaint between batches
+    await sleep(300);
   }
   if (autoOn()) rebuildAuto(photos);
 }
@@ -1910,20 +1759,12 @@ $("photos").addEventListener("change", (e) => {
 // start getting it ready as soon as the page opens, so photos are recognized right away later.
 try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (_) {}
 async function preloadAI() {
-  if (working || classifiers[$("aiModel").value]) return;
-  try {
-    const key = $("aiModel").value;
-    await getClassifier(key);
-    if (!working) {
-      setStatus((await modelIsSaved())
-        ? "The AI is ready and saved on this device. It will not download again. Pick your photos."
-        : "The AI is ready, but this browser could not save it (open the page with https). Pick your photos.");
-      progress.end();
-    }
-  } catch (_) { /* the real error shows when you pick photos */ }
+  if (working) return;
+  setStatus(getGeminiKey() ? "Gemini is ready. Pick your photos." : "Paste your Gemini API key to use content (AI).");
 }
 if (checked("mode") === "content") setTimeout(preloadAI, 800);
-$("aiModel").addEventListener("change", () => { if (checked("mode") === "content") preloadAI(); });
+$("geminiKey").value = getGeminiKey();
+$("geminiKey").addEventListener("change", () => { saveGeminiKey(); if (checked("mode") === "content") preloadAI(); });
 
 const MODE_HINTS = {
   date: "Photos go into year / month folders, or into one folder per camera.",
@@ -1961,7 +1802,6 @@ $("aiConf").addEventListener("input", () => {
 });
 $("catSave").addEventListener("click", () => busy(organize));
 renderAiChips();
-if (navigator.gpu && !IS_MOBILE) $("aiModel").value = "better";   // a GPU makes the more accurate model fast enough
 renderCats();
 $("selAll").addEventListener("click", () => setAll(true));
 $("selNone").addEventListener("click", () => setAll(false));
