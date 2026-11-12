@@ -1117,10 +1117,22 @@ async function loadClassifier(key, noGpu) {
     let loaded = 0, total = 0;
     for (const f of Object.values(files)) { loaded += f.loaded; total += f.total; }
     if (!total) return;
+    lastAct = Date.now();
+    if (loaded >= total) {   // every file is here: the model is now being built in memory (can take a minute)
+      progress.set(1);
+      setStatus("Starting the AI model (can take a minute, please wait)...");
+      return;
+    }
     shown = Math.max(shown, Math.min(99, Math.floor((loaded / total) * 100)));
     setStatus(`Downloading the AI model: ${shown}%`);
     progress.set(shown / 100);
   };
+  // The time limit only counts time with NO activity, so a slow download is never cancelled.
+  let lastAct = Date.now();
+  const withIdle = (promise, ms, what) => new Promise((res, rej) => {
+    const t = setInterval(() => { if (Date.now() - lastAct > ms) { clearInterval(t); rej(new Error(what + " took too long")); } }, 1000);
+    promise.then((v) => { clearInterval(t); res(v); }, (e) => { clearInterval(t); rej(e); });
+  });
   let eng = null;
   try {
     // Fast path: the text of the folders is embedded ONCE, then every photo only needs the image half.
@@ -1139,9 +1151,13 @@ async function loadClassifier(key, noGpu) {
     attempts.push({ text: cpu, vision: cpu }, { text: { device: "wasm" }, vision: { device: "wasm" } });
     for (const a of attempts) {
       try {
-        const ms = a.gpu ? 60000 : 240000;   // a hung GPU start falls back to the CPU
-        const textModel = await withTimeout(lib.CLIPTextModelWithProjection.from_pretrained(id, { progress_callback: cb, ...a.text }), ms, "Starting the text model");
-        const visionModel = await withTimeout(lib.CLIPVisionModelWithProjection.from_pretrained(id, { progress_callback: cb, ...a.vision }), ms, "Starting the image model");
+        const ms = a.gpu ? 60000 : 240000;   // a hung GPU start (no activity) falls back to the CPU
+        lastAct = Date.now();
+        // Both models download together, so the percent is one honest number.
+        const [textModel, visionModel] = await withIdle(Promise.all([
+          lib.CLIPTextModelWithProjection.from_pretrained(id, { progress_callback: cb, ...a.text }),
+          lib.CLIPVisionModelWithProjection.from_pretrained(id, { progress_callback: cb, ...a.vision }),
+        ]), ms, "Starting the AI model");
         eng = { lib, fast: true, device: a.vision.device, tokenizer, processor, textModel, visionModel, labelSig: "", labelVecs: null };
         break;
       } catch (_) {
