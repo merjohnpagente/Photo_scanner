@@ -56,6 +56,9 @@ def allow_other_origins(response):
     response.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
     # Chrome asks for this when a public https page (like GitHub Pages) talks to localhost
     response.headers["Access-Control-Allow-Private-Network"] = "true"
+    if not request.path.startswith("/api/"):   # lets the AI use several CPU threads (faster scan)
+        response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+        response.headers["Cross-Origin-Embedder-Policy"] = "credentialless"
     return response
 
 

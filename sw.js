@@ -19,6 +19,18 @@ self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim(
 
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
+  // Cross-origin isolation (needed for multi-threaded WebAssembly = a much faster AI scan).
+  // "credentialless" keeps the CDN scripts and the model downloads working.
+  if (event.request.mode === "navigate" && url.origin === self.location.origin) {
+    event.respondWith(fetch(event.request).then((res) => {
+      if (!res || res.status === 0) return res;
+      const headers = new Headers(res.headers);
+      headers.set("Cross-Origin-Opener-Policy", "same-origin");
+      headers.set("Cross-Origin-Embedder-Policy", "credentialless");
+      return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
+    }).catch(() => fetch(event.request)));
+    return;
+  }
   if (event.request.method === "POST" && url.pathname.endsWith("/api/duplicates")) {
     event.respondWith(duplicates(event.request));
   }

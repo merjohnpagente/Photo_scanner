@@ -574,6 +574,15 @@ const builtInReady = useBuiltIn && "serviceWorker" in navigator
   ? navigator.serviceWorker.register("sw.js").then(() => navigator.serviceWorker.ready).catch(() => null)
   : Promise.resolve(null);
 
+// sw.js adds the headers that unlock multi-threaded AI. They apply from the next page load, so reload once (only when idle).
+if (useBuiltIn && "serviceWorker" in navigator) {
+  navigator.serviceWorker.ready.then(() => {
+    let tried = true;
+    try { tried = sessionStorage.getItem("po_coi") === "1"; sessionStorage.setItem("po_coi", "1"); } catch (_) {}
+    if (!self.crossOriginIsolated && !tried) setTimeout(() => { if (!working && !photos.length) location.reload(); }, 400);
+  }).catch(() => {});
+}
+
 async function ensureBuiltIn() {
   if (!("serviceWorker" in navigator)) {
     throw new Error("This browser can't run the built-in API. Use Chrome or Edge on the GitHub Pages address.");
@@ -1099,6 +1108,9 @@ async function loadClassifier(key, noGpu) {
   try { lib = await import(AI_LIB); }
   catch (_) { throw new Error("Could not load the AI library. Check your internet connection and try again."); }
   lib.env.allowLocalModels = false;
+  try {   // several CPU threads for the model (only possible when the page is cross-origin isolated, see sw.js)
+    if (self.crossOriginIsolated) lib.env.backends.onnx.wasm.numThreads = Math.max(2, Math.min(4, navigator.hardwareConcurrency || 2));
+  } catch (_) {}
   lib.env.useBrowserCache = true;   // keep every downloaded model file in the browser (Cache API) for next time
   try { if (navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch (_) {}
   setStatus((await modelIsSaved()) ? "Loading the saved AI model..." : "Loading the AI model...");
@@ -1235,7 +1247,7 @@ async function scoreImages(eng, imgs, labels) {
 }
 
 // Returns one result per photo (or null when the photo can't be read, e.g. TIFF).
-async function runBatch(eng, chunk, labels) {
+async function runBatch(eng, chunk, labels, decoded) {
   const res = chunk.map(() => null);
   if (!eng.fast) {
     for (let i = 0; i < chunk.length; i++) {
@@ -1243,7 +1255,7 @@ async function runBatch(eng, chunk, labels) {
     }
     return res;
   }
-  const imgs = await Promise.all(chunk.map((p) => smallImage(eng, p).catch(() => null)));
+  const imgs = decoded || await Promise.all(chunk.map((p) => smallImage(eng, p).catch(() => null)));
   const ok = [];
   imgs.forEach((im, i) => { if (im) ok.push(i); });
   if (ok.length) {
@@ -1289,12 +1301,17 @@ async function classifyPhotos(list, onEach) {
   const todo = list.filter((p) => p.aiSig !== sig);   // photos already scanned with these folders are skipped
   const already = list.length - todo.length;
   const BATCH = eng.fast ? (eng.device === "webgpu" && !IS_MOBILE ? 16 : 8) : 1;
+  // Pipeline: while the model scores one batch, the next batch of photos is already being decoded.
+  const decodeFor = (c) => (eng.fast ? Promise.all(c.map((p) => smallImage(eng, p).catch(() => null))) : null);
+  let pending = todo.length ? decodeFor(todo.slice(0, BATCH)) : null;
   for (let i = 0; i < todo.length; i += BATCH) {
     const chunk = todo.slice(i, i + BATCH);
+    const decoded = pending;
+    pending = i + BATCH < todo.length ? decodeFor(todo.slice(i + BATCH, i + 2 * BATCH)) : null;
     setStatus(`Scanning ${already + i + 1} of ${list.length}...`);
     progress.set((already + i) / list.length);
     let outs;
-    try { outs = await runBatch(eng, chunk, names()); }
+    try { outs = await runBatch(eng, chunk, names(), decoded ? await decoded : null); }
     catch (_) {
       outs = chunk.map(() => null);
       if (eng.device === "webgpu") {   // the GPU failed: switch to the CPU and try this batch again
