@@ -1092,12 +1092,23 @@ async function loadClassifier(key, noGpu) {
   lib.env.allowLocalModels = false;
   setStatus("Loading the AI model...");
   const id = AI_MODELS[key];
+  // The library reports progress PER FILE (tokenizer, text model, image model), so the raw number jumps
+  // around and restarts. Add all files together and never let the shown percent go backwards.
+  const files = {};
+  let shown = 0;
   const cb = (d) => {
-    if (d.status === "progress" && typeof d.progress === "number") {
-      setStatus(`Downloading the AI model: ${Math.round(d.progress)}%`);
-      progress.set(d.progress / 100);
-      if (d.progress >= 100) setStatus("Starting the AI model (can take a minute on a phone)...");
-    }
+    if (!d || !d.file) return;
+    if (d.status === "progress" && typeof d.loaded === "number" && d.total > 0) {
+      files[d.file] = { loaded: d.loaded, total: d.total };
+    } else if (d.status === "done" && files[d.file]) {
+      files[d.file].loaded = files[d.file].total;
+    } else return;
+    let loaded = 0, total = 0;
+    for (const f of Object.values(files)) { loaded += f.loaded; total += f.total; }
+    if (!total) return;
+    shown = Math.max(shown, Math.min(99, Math.floor((loaded / total) * 100)));
+    setStatus(`Downloading the AI model: ${shown}%`);
+    progress.set(shown / 100);
   };
   let eng = null;
   try {
@@ -1127,6 +1138,7 @@ async function loadClassifier(key, noGpu) {
       }
     }
     if (!eng) throw new Error("no fast model");
+    setStatus("Starting the AI model (can take a minute on a phone)...");
   } catch (_) {
     setStatus("Starting the AI model (backup way)...");
     const pipe = await withTimeout(lib.pipeline("zero-shot-image-classification", id, { progress_callback: cb }), 300000,
