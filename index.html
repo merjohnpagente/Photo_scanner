@@ -1067,7 +1067,8 @@ function addAiCat() {
 // Photos are recognized online by Google Gemini, so nothing big is downloaded to this device.
 const GEMINI_MODEL = "gemini-flash-latest";
 const GEMINI_PROXY = "";   // your Cloudflare Worker URL (see README). When set, nobody has to paste a key.
-const GEMINI_BATCH = 6;
+const GEMINI_BATCH = 16;       // photos per request (bigger = fewer requests = faster)
+const GEMINI_PARALLEL = 4;     // requests running at the same time
 // GitHub Actions replaces the placeholder below with the GEMINI_API_KEY repository secret when the site is deployed.
 const GEMINI_BUILD_KEY = "__GEMINI_API_KEY__";
 const buildKey = () => (GEMINI_BUILD_KEY.startsWith("__") ? "" : GEMINI_BUILD_KEY);
@@ -1081,12 +1082,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Shrinks a photo to ~512 px wide JPEG (base64) so it uploads fast.
 async function geminiImage(p) {
-  const bmp = await createImageBitmap(p.file, { resizeWidth: 512, resizeQuality: "medium" });
+  const bmp = await createImageBitmap(p.file, { resizeWidth: 384, resizeQuality: "low" });
   const c = document.createElement("canvas");
   c.width = bmp.width; c.height = bmp.height;
   c.getContext("2d").drawImage(bmp, 0, 0);
   if (bmp.close) bmp.close();
-  return c.toDataURL("image/jpeg", 0.7).split(",")[1];
+  return c.toDataURL("image/jpeg", 0.6).split(",")[1];
 }
 
 // When the page is opened from  python app.py  (http://127.0.0.1:5000) and GEMINI_API_KEY is in the .env file,
@@ -1114,6 +1115,10 @@ async function geminiCall(key, body) {
     if (res.ok) return res.json();
     if (res.status === 400 || res.status === 403) {
       let msg = ""; try { msg = (await res.json()).error.message; } catch (_) {}
+      if (/think/i.test(msg) && body.generationConfig && body.generationConfig.thinkingConfig) {   // this model can't turn thinking off
+        delete body.generationConfig.thinkingConfig;
+        attempt--; continue;
+      }
       throw new Error("Gemini did not accept the request" + (msg ? ": " + msg : ". Check your API key."));
     }
     if (res.status === 429 || res.status >= 500) {   // too many requests / busy: wait and try again
@@ -1146,6 +1151,7 @@ async function geminiBatch(key, chunk, cats) {
     contents: [{ role: "user", parts }],
     generationConfig: {
       temperature: 0,
+      thinkingConfig: { thinkingBudget: 0 },   // no "thinking" time: much faster
       responseMimeType: "application/json",
       responseSchema: {
         type: "ARRAY",
@@ -1173,19 +1179,29 @@ async function classifyPhotos(list, onEach) {
   const sig = "gemini|" + cats.map((c) => c.folder).join("|");
   const todo = list.filter((p) => p.aiSig !== sig);   // photos already scanned with these folders are skipped
   const already = list.length - todo.length;
-  for (let i = 0; i < todo.length; i += GEMINI_BATCH) {
-    const chunk = todo.slice(i, i + GEMINI_BATCH);
-    setStatus(`Scanning ${already + i + 1} of ${list.length} with Gemini...`);
-    progress.set((already + i) / list.length);
-    const outs = await geminiBatch(key, chunk, cats);
-    chunk.forEach((p, k) => {
-      p.aiChoice = null; p.aiManual = false;
-      p.aiScores = outs[k] ? [outs[k]] : [{ folder: AI_UNSORTED, score: 0 }];
-      p.aiSig = sig;
-    });
-    if (onEach) onEach();
-    await sleep(300);
-  }
+  const chunks = [];
+  for (let i = 0; i < todo.length; i += GEMINI_BATCH) chunks.push(todo.slice(i, i + GEMINI_BATCH));
+  let next = 0, done = 0, failure = null;
+  setStatus(`Scanning ${list.length} photos with Gemini...`);
+  const worker = async () => {
+    while (!failure && next < chunks.length) {
+      const chunk = chunks[next++];
+      try {
+        const outs = await geminiBatch(key, chunk, cats);
+        chunk.forEach((p, k) => {
+          p.aiChoice = null; p.aiManual = false;
+          p.aiScores = outs[k] ? [outs[k]] : [{ folder: AI_UNSORTED, score: 0 }];
+          p.aiSig = sig;
+        });
+        done += chunk.length;
+        setStatus(`Scanned ${already + done} of ${list.length} with Gemini...`);
+        progress.set((already + done) / list.length);
+        if (onEach) onEach();
+      } catch (e) { failure = e; }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(GEMINI_PARALLEL, chunks.length) }, worker));
+  if (failure) throw failure;
   if (autoOn()) rebuildAuto(photos);
 }
 function aiFolder(p) {
