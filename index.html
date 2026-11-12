@@ -433,9 +433,9 @@ tr:last-child td { border-bottom: 0; }
   <p class="label rise">01 — sort into</p>
   <fieldset class="mode rise">
     <legend class="sr">Sort photos</legend>
-    <label><input type="radio" name="mode" value="date"><span class="t">date</span></label>
+    <label><input type="radio" name="mode" value="date" checked><span class="t">date</span></label>
     <label><input type="radio" name="mode" value="camera"><span class="t">camera</span></label>
-    <label><input type="radio" name="mode" value="content" checked><span class="t">content (AI)</span></label>
+    <label><input type="radio" name="mode" value="content"><span class="t">content (AI)</span></label>
   </fieldset>
   <p id="modeHint" class="hint rise">The AI looks at each photo and names the folders by itself, like Dogs, Beaches or Food.</p>
   <div id="aiBox" class="aibox">
@@ -1931,6 +1931,9 @@ const MODE_HINTS = {
   content: "The AI looks at each photo and names the folders by itself, like Dogs, Beaches or Food.",
 };
 $("modeHint").textContent = MODE_HINTS[checked("mode")];
+// Start in plain date mode: organizing works right away and the AI is only loaded if you pick "content (AI)".
+$("aiBox").hidden = checked("mode") !== "content";
+$("cats").hidden = checked("mode") !== "content";
 $("sort").addEventListener("change", (e) => {
   if (e.target.name !== "mode") return;
   const mode = checked("mode");
