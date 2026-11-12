@@ -1682,8 +1682,10 @@ async function copyInto(dir, name, file) {
   const finalName = await uniqueName(dir, name);
   const fh = await dir.getFileHandle(finalName, { create: true });
   const w = await fh.createWritable();
-  await w.write(file);
-  await w.close();
+  try { await w.write(await file.arrayBuffer()); await w.close(); }
+  catch (e) { try { await w.abort(); } catch (_) {} throw e; }
+  const saved = await fh.getFile();   // make sure the copy really has the photo in it
+  if (saved.size !== file.size) throw new Error("the copy is empty or incomplete");
   return finalName;
 }
 
@@ -1705,7 +1707,8 @@ async function organize() {
   if (!canWrite) { await loadJSZip(); zip = new JSZip(); }
   const perFolder = new Map();
   const rows = [];
-  let copied = 0, failed = 0;
+  let copied = 0, failed = 0, firstError = "";
+  const failedItems = [];
   for (let i = 0; i < list.length; i++) {
     const p = list[i];
     setStatus(`${zip ? "Adding" : "Copying"} ${i + 1} of ${list.length}: ${p.name}`);
@@ -1728,8 +1731,28 @@ async function organize() {
       rows.push([p.path, p.camera, fmtDate(p.date), fmtSize(p.size), `${zip ? "Added to ZIP" : "Copied to"} ${folder}/${finalName}${match}`]);
     } catch (err) {
       failed++;
+      if (!firstError) firstError = `${err.name ? err.name + ": " : ""}${err.message || err}`;
+      failedItems.push({ p, folder });
       rows.push({ cells: [p.path, p.camera, fmtDate(p.date), fmtSize(p.size), `Failed: ${err.message || err}`], className: "fail" });
     }
+  }
+  // Could not write into the folder? Do not lose the photos: download the failed ones as a ZIP with the same Sorted/... layout.
+  if (!zip && failedItems.length) {
+    try {
+      await loadJSZip();
+      const z = new JSZip(), used = new Map();
+      for (const { p, folder } of failedItems) {
+        if (!used.has(folder)) used.set(folder, new Set());
+        z.file(`${folder}/${zipName(used.get(folder), p.name)}`, p.file);
+      }
+      setStatus("Could not save into the folder. Building a ZIP instead...");
+      const blob = await z.generateAsync({ type: "blob", compression: "STORE" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "sorted_photos_not_copied.zip";
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    } catch (_) { /* the table below still shows each error */ }
   }
   if (zip && copied) {
     setStatus("Building the ZIP...");
@@ -1748,6 +1771,7 @@ async function organize() {
     ["Photos selected", String(list.length)],
     [zip ? "Added to ZIP" : "Copied", String(copied)],
     ["Failed", String(failed)],
+    ...(firstError ? [["First error", firstError]] : []),
     ["Sorted by", modeLabel],
     ["Folders used", String(perFolder.size)],
     ["Saved in", zip ? "sorted_photos.zip (downloaded)" : `${source.name}/${SORTED_FOLDER}`],
